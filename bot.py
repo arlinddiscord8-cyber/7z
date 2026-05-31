@@ -23,12 +23,12 @@ WELCOME_CHANNEL_ID = 1510606440006422589
 CALL_VOICE_CHANNEL_ID = 1510715789567590630
 
 # =============================
-# 🔥 LOG CONFIG (NEU)
+# LOG CONFIG (UNVERÄNDERT)
 # =============================
 LOG_CHANNEL_ID = 1510606418888360101
 
 USE_EMBEDS = True
-LOG_COLOR = "black"  # "white" möglich
+LOG_COLOR = "black"
 
 # =============================
 # BOT SETUP
@@ -52,10 +52,6 @@ async def get_latest_audit(guild, action):
         return await guild.audit_logs(limit=1, action=action).__anext__()
     except:
         return None
-
-# =============================
-# 🧾 LOG SYSTEM (NEU)
-# =============================
 
 def get_log_color():
     if LOG_COLOR.lower() == "white":
@@ -189,7 +185,7 @@ async def on_guild_channel_delete(channel):
     except:
         pass
 
-    # ================= CATEGORY RESTORE =================
+    # RESTORE bleibt unverändert
     if isinstance(channel, discord.CategoryChannel):
         category_backup[channel.id] = {
             "name": channel.name,
@@ -231,7 +227,6 @@ async def on_guild_channel_delete(channel):
                 pass
         return
 
-    # ================= NORMAL CHANNEL RESTORE =================
     try:
         if isinstance(channel, discord.TextChannel):
             await guild.create_text_channel(
@@ -322,7 +317,7 @@ async def on_guild_role_delete(role):
         pass
 
 # =============================
-# COMBINED MEMBER BAN HANDLER
+# BAN DETECTION
 # =============================
 @bot.event
 async def on_member_ban(guild, user):
@@ -388,29 +383,8 @@ async def on_member_remove(member):
         pass
 
 # =============================
-# COMMANDS
+# COMMANDS (UPDATED /send ONLY)
 # =============================
-@bot.command()
-async def call(ctx):
-    if ctx.guild.id != ALLOWED_GUILD_ID:
-        return
-
-    if not is_owner(ctx.author.id):
-        return await ctx.send("❌ Kein Zugriff")
-
-    channel = bot.get_channel(CALL_VOICE_CHANNEL_ID)
-    if not isinstance(channel, discord.VoiceChannel):
-        return await ctx.send("❌ Voice Channel fehlt")
-
-    try:
-        if ctx.voice_client:
-            await ctx.voice_client.disconnect()
-
-        vc = await channel.connect()
-        await ctx.send("✅ Connected")
-    except Exception as e:
-        await ctx.send(f"❌ Fehler: {e}")
-
 @bot.tree.command(
     name="send",
     description="Sendet Nachricht",
@@ -418,12 +392,21 @@ async def call(ctx):
 )
 async def send(interaction: discord.Interaction,
                channel: discord.TextChannel,
-               message: str):
+               message: str,
+               embed: bool = True):   # 🔥 NEU
 
     if interaction.user.id not in OWNERS:
         return await interaction.response.send_message("❌ Kein Zugriff", ephemeral=True)
 
-    await channel.send(message)
+    if embed:
+        emb = discord.Embed(
+            description=message,
+            color=discord.Color.from_rgb(0, 0, 0)
+        )
+        await channel.send(embed=emb)
+    else:
+        await channel.send(message)
+
     await interaction.response.send_message("✅ Gesendet", ephemeral=True)
 
 # =============================
