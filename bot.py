@@ -60,14 +60,17 @@ async def get_latest_audit(guild, action):
         return None
 
 # =============================
-# LOG SYSTEM
+# EMBED COLOR (BLACK / WHITE)
 # =============================
 
-def get_log_color():
+def get_embed_color():
     if LOG_THEME.lower() == "white":
         return discord.Color.from_rgb(255, 255, 255)
     return discord.Color.from_rgb(0, 0, 0)
 
+# =============================
+# LOG SYSTEM
+# =============================
 
 async def send_log(guild, message: str):
     channel = guild.get_channel(LOG_CHANNEL_ID)
@@ -78,7 +81,7 @@ async def send_log(guild, message: str):
         if USE_EMBEDS:
             embed = discord.Embed(
                 description=message,
-                color=get_log_color()
+                color=get_embed_color()
             )
             embed.timestamp = datetime.utcnow()
             await channel.send(embed=embed)
@@ -88,7 +91,7 @@ async def send_log(guild, message: str):
         pass
 
 # =============================
-# VOICE KEEP ALIVE (FIXED)
+# VOICE KEEP ALIVE (STABIL)
 # =============================
 
 async def voice_keep_alive():
@@ -159,7 +162,7 @@ async def on_message(message):
     await bot.process_commands(message)
 
 # =============================
-# /SEND FIXED
+# /SEND (FIXED + BLACK/WHITE EMBED)
 # =============================
 
 @bot.tree.command(
@@ -179,7 +182,7 @@ async def send(interaction: discord.Interaction,
         if embed:
             emb = discord.Embed(
                 description=message,
-                color=discord.Color.from_rgb(0, 0, 0)
+                color=get_embed_color()
             )
             await channel.send(embed=emb)
         else:
@@ -191,7 +194,7 @@ async def send(interaction: discord.Interaction,
         await interaction.response.send_message(f"❌ Fehler: {e}", ephemeral=True)
 
 # =============================
-# CALL COMMAND
+# !CALL (VOICE JOIN)
 # =============================
 
 @bot.command()
