@@ -8,7 +8,7 @@ import asyncio
 # =============================
 # CONFIG
 # =============================
-TOKEN = "DEIN_TOKEN_HIER"
+TOKEN = "MTUxMDcyMDM4NDkzOTQ2Mjc2Ng.GDiPko.Aw0oRphpNAoExf2pi3x4gQrX_2QCNPDyDkOfWQ"
 
 ALLOWED_GUILD_ID = 1510606068311527484
 
