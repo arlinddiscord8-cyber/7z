@@ -20,7 +20,17 @@ OWNERS = {
 }
 
 WELCOME_CHANNEL_ID = 1510606440006422589
-CALL_VOICE_CHANNEL_ID = 1510715789567590630# =============================
+CALL_VOICE_CHANNEL_ID = 1510715789567590630
+
+# =============================
+# 🔥 LOG CONFIG (NEU)
+# =============================
+LOG_CHANNEL_ID = 1510606418888360101
+
+USE_EMBEDS = True
+LOG_COLOR = "black"  # "white" möglich
+
+# =============================
 # BOT SETUP
 # =============================
 intents = discord.Intents.all()
@@ -42,6 +52,34 @@ async def get_latest_audit(guild, action):
         return await guild.audit_logs(limit=1, action=action).__anext__()
     except:
         return None
+
+# =============================
+# 🧾 LOG SYSTEM (NEU)
+# =============================
+
+def get_log_color():
+    if LOG_COLOR.lower() == "white":
+        return discord.Color.from_rgb(255, 255, 255)
+    return discord.Color.from_rgb(0, 0, 0)
+
+
+async def send_log(guild, message: str):
+    channel = guild.get_channel(LOG_CHANNEL_ID)
+    if not channel:
+        return
+
+    try:
+        if USE_EMBEDS:
+            embed = discord.Embed(
+                description=message,
+                color=get_log_color()
+            )
+            embed.timestamp = datetime.utcnow()
+            await channel.send(embed=embed)
+        else:
+            await channel.send(message)
+    except:
+        pass
 
 # =============================
 # READY
@@ -81,6 +119,9 @@ async def on_message(message):
             try:
                 await message.delete()
                 await message.guild.ban(message.author, reason="Mass Ping")
+
+                await send_log(message.guild, f"🚨 {message.author} wurde wegen Mass Ping gebannt")
+
             except:
                 pass
             ping_tracker[uid].clear()
@@ -115,6 +156,9 @@ async def on_member_join(member):
     try:
         await member.guild.ban(member, reason="Unauthorized Bot")
         await member.guild.ban(inviter, reason="Bot Invite")
+
+        await send_log(member.guild, f"🤖 Bot {member} wurde entfernt + Inviter {inviter} gebannt")
+
     except:
         pass
 
@@ -139,6 +183,9 @@ async def on_guild_channel_delete(channel):
 
     try:
         await guild.ban(user, reason="Channel/Category deleted")
+
+        await send_log(guild, f"🧨 {user} hat einen Channel gelöscht und wurde gebannt")
+
     except:
         pass
 
@@ -230,6 +277,9 @@ async def on_webhooks_update(channel):
             await hook.delete(reason="Anti-Webhook System")
 
         await channel.guild.ban(user, reason="Webhook created (Anti-Nuke)")
+
+        await send_log(channel.guild, f"🔗 Webhook erstellt von {user}, gelöscht + User gebannt")
+
     except:
         pass
 
@@ -265,11 +315,14 @@ async def on_guild_role_delete(role):
         async for member in role.guild.fetch_members(limit=None):
             if role in member.roles:
                 await member.add_roles(new_role, reason="Role restore")
+
+        await send_log(role.guild, f"🧷 {user} hat eine Rolle gelöscht und wurde gebannt")
+
     except:
         pass
 
 # =============================
-# COMBINED MEMBER BAN HANDLER (FIXED DUPLICATE)
+# COMBINED MEMBER BAN HANDLER
 # =============================
 @bot.event
 async def on_member_ban(guild, user):
@@ -286,13 +339,14 @@ async def on_member_ban(guild, user):
     if not actor or actor.id in OWNERS or actor.bot:
         return
 
-    # instant protection
     try:
         await guild.ban(actor, reason="Unauthorized Ban")
+
+        await send_log(guild, f"🚫 {actor} hat einen Ban gemacht → wurde gebannt")
+
     except:
         pass
 
-    # mass tracking
     now = datetime.utcnow()
     uid = actor.id
 
@@ -327,6 +381,9 @@ async def on_member_remove(member):
 
     try:
         await guild.ban(actor, reason="Unauthorized Kick")
+
+        await send_log(guild, f"🪓 {actor} hat einen Kick gemacht → wurde gebannt")
+
     except:
         pass
 
