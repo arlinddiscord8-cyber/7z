@@ -7,10 +7,10 @@ import asyncio
 import os
 
 TOKEN = os.getenv("TOKEN")
+
 # =============================
 # CONFIG
 # =============================
-  
 
 ALLOWED_GUILD_ID = 1510606068311527484
 
@@ -23,16 +23,24 @@ WELCOME_CHANNEL_ID = 1510606440006422589
 CALL_VOICE_CHANNEL_ID = 1510715789567590630
 
 # =============================
-# LOG CONFIG (UNVERÄNDERT)
+# LOG CONFIG
 # =============================
-LOG_CHANNEL_ID = 1510606418888360101
 
+LOG_CHANNEL_ID = 1510606418888360101
 USE_EMBEDS = True
-LOG_COLOR = "black"
+LOG_THEME = "black"  # "black" oder "white"
+
+# =============================
+# VOICE KEEP ALIVE
+# =============================
+
+VOICE_ALWAYS_ON = True
+voice_client = None
 
 # =============================
 # BOT SETUP
 # =============================
+
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -53,8 +61,12 @@ async def get_latest_audit(guild, action):
     except:
         return None
 
+# =============================
+# LOG SYSTEM
+# =============================
+
 def get_log_color():
-    if LOG_COLOR.lower() == "white":
+    if LOG_THEME.lower() == "white":
         return discord.Color.from_rgb(255, 255, 255)
     return discord.Color.from_rgb(0, 0, 0)
 
@@ -78,20 +90,61 @@ async def send_log(guild, message: str):
         pass
 
 # =============================
+# VOICE KEEP ALIVE LOOP
+# =============================
+
+async def voice_keep_alive():
+    await bot.wait_until_ready()
+
+    global voice_client
+
+    while VOICE_ALWAYS_ON:
+        try:
+            channel = bot.get_channel(CALL_VOICE_CHANNEL_ID)
+
+            if channel:
+                if not bot.voice_clients:
+                    try:
+                        voice_client = await channel.connect()
+                    except:
+                        pass
+                else:
+                    vc = bot.voice_clients[0]
+                    if not vc.is_connected():
+                        try:
+                            await vc.disconnect()
+                        except:
+                            pass
+                        try:
+                            voice_client = await channel.connect()
+                        except:
+                            pass
+
+        except:
+            pass
+
+        await asyncio.sleep(15)
+
+# =============================
 # READY
 # =============================
+
 @bot.event
 async def on_ready():
     print(f"✅ Online als {bot.user}")
+
     try:
         await bot.tree.sync(guild=discord.Object(id=ALLOWED_GUILD_ID))
         print("✅ Slashcommands synced")
     except Exception as e:
         print(e)
 
+    bot.loop.create_task(voice_keep_alive())
+
 # =============================
 # ON MESSAGE (ANTI PING)
 # =============================
+
 @bot.event
 async def on_message(message):
     if not message.guild or message.guild.id != ALLOWED_GUILD_ID:
@@ -127,6 +180,7 @@ async def on_message(message):
 # =============================
 # BOT ADD PROTECTION
 # =============================
+
 @bot.event
 async def on_member_join(member):
     if member.guild.id != ALLOWED_GUILD_ID:
@@ -143,10 +197,7 @@ async def on_member_join(member):
 
     inviter = entry.user
 
-    if not inviter:
-        return
-
-    if inviter.id in OWNERS or inviter.bot:
+    if not inviter or inviter.id in OWNERS or inviter.bot:
         return
 
     try:
@@ -159,8 +210,9 @@ async def on_member_join(member):
         pass
 
 # =============================
-# CHANNEL / CATEGORY DELETE PROTECTION
+# CHANNEL DELETE PROTECTION
 # =============================
+
 @bot.event
 async def on_guild_channel_delete(channel):
     if channel.guild.id != ALLOWED_GUILD_ID:
@@ -178,79 +230,15 @@ async def on_guild_channel_delete(channel):
         return
 
     try:
-        await guild.ban(user, reason="Channel/Category deleted")
-
+        await guild.ban(user, reason="Channel deleted")
         await send_log(guild, f"🧨 {user} hat einen Channel gelöscht und wurde gebannt")
-
-    except:
-        pass
-
-    # RESTORE bleibt unverändert
-    if isinstance(channel, discord.CategoryChannel):
-        category_backup[channel.id] = {
-            "name": channel.name,
-            "position": channel.position,
-            "overwrites": channel.overwrites,
-            "channels": []
-        }
-
-        for ch in guild.channels:
-            if getattr(ch, "category", None) and ch.category and ch.category.id == channel.id:
-                category_backup[channel.id]["channels"].append(ch)
-
-        new_cat = await guild.create_category(
-            name=channel.name,
-            position=channel.position,
-            overwrites=channel.overwrites
-        )
-
-        for ch in category_backup[channel.id]["channels"]:
-            try:
-                if isinstance(ch, discord.TextChannel):
-                    await guild.create_text_channel(
-                        name=ch.name,
-                        topic=ch.topic,
-                        nsfw=ch.nsfw,
-                        slowmode_delay=ch.slowmode_delay,
-                        category=new_cat,
-                        overwrites=ch.overwrites
-                    )
-                elif isinstance(ch, discord.VoiceChannel):
-                    await guild.create_voice_channel(
-                        name=ch.name,
-                        bitrate=ch.bitrate,
-                        user_limit=ch.user_limit,
-                        category=new_cat,
-                        overwrites=ch.overwrites
-                    )
-            except:
-                pass
-        return
-
-    try:
-        if isinstance(channel, discord.TextChannel):
-            await guild.create_text_channel(
-                name=channel.name,
-                topic=channel.topic,
-                nsfw=channel.nsfw,
-                slowmode_delay=channel.slowmode_delay,
-                category=channel.category,
-                overwrites=channel.overwrites
-            )
-        elif isinstance(channel, discord.VoiceChannel):
-            await guild.create_voice_channel(
-                name=channel.name,
-                bitrate=channel.bitrate,
-                user_limit=channel.user_limit,
-                category=channel.category,
-                overwrites=channel.overwrites
-            )
     except:
         pass
 
 # =============================
 # WEBHOOK PROTECTION
 # =============================
+
 @bot.event
 async def on_webhooks_update(channel):
     if channel.guild.id != ALLOWED_GUILD_ID:
@@ -269,11 +257,11 @@ async def on_webhooks_update(channel):
     try:
         webhooks = await channel.webhooks()
         for hook in webhooks:
-            await hook.delete(reason="Anti-Webhook System")
+            await hook.delete(reason="Anti-Webhook")
 
-        await channel.guild.ban(user, reason="Webhook created (Anti-Nuke)")
+        await channel.guild.ban(user, reason="Webhook created")
 
-        await send_log(channel.guild, f"🔗 Webhook erstellt von {user}, gelöscht + User gebannt")
+        await send_log(channel.guild, f"🔗 Webhook von {user} gelöscht + gebannt")
 
     except:
         pass
@@ -281,6 +269,7 @@ async def on_webhooks_update(channel):
 # =============================
 # ROLE DELETE PROTECTION
 # =============================
+
 @bot.event
 async def on_guild_role_delete(role):
     if role.guild.id != ALLOWED_GUILD_ID:
@@ -297,21 +286,9 @@ async def on_guild_role_delete(role):
         return
 
     try:
-        await role.guild.ban(user, reason="Role deleted (Anti-Nuke)")
+        await role.guild.ban(user, reason="Role deleted")
 
-        new_role = await role.guild.create_role(
-            name=role.name,
-            permissions=role.permissions,
-            colour=role.colour,
-            hoist=role.hoist,
-            mentionable=role.mentionable
-        )
-
-        async for member in role.guild.fetch_members(limit=None):
-            if role in member.roles:
-                await member.add_roles(new_role, reason="Role restore")
-
-        await send_log(role.guild, f"🧷 {user} hat eine Rolle gelöscht und wurde gebannt")
+        await send_log(role.guild, f"🧷 {user} hat eine Rolle gelöscht")
 
     except:
         pass
@@ -319,6 +296,7 @@ async def on_guild_role_delete(role):
 # =============================
 # BAN DETECTION
 # =============================
+
 @bot.event
 async def on_member_ban(guild, user):
     if guild.id != ALLOWED_GUILD_ID:
@@ -336,28 +314,14 @@ async def on_member_ban(guild, user):
 
     try:
         await guild.ban(actor, reason="Unauthorized Ban")
-
-        await send_log(guild, f"🚫 {actor} hat einen Ban gemacht → wurde gebannt")
-
+        await send_log(guild, f"🚫 {actor} hat einen Ban gemacht → gebannt")
     except:
         pass
-
-    now = datetime.utcnow()
-    uid = actor.id
-
-    action_tracker[uid].append(now)
-    action_tracker[uid] = [t for t in action_tracker[uid] if now - t < timedelta(seconds=5)]
-
-    if len(action_tracker[uid]) >= 2:
-        try:
-            await guild.ban(actor, reason="Mass Ban Detected")
-        except:
-            pass
-        action_tracker[uid].clear()
 
 # =============================
 # KICK DETECTION
 # =============================
+
 @bot.event
 async def on_member_remove(member):
     guild = member.guild
@@ -376,40 +340,40 @@ async def on_member_remove(member):
 
     try:
         await guild.ban(actor, reason="Unauthorized Kick")
-
-        await send_log(guild, f"🪓 {actor} hat einen Kick gemacht → wurde gebannt")
-
+        await send_log(guild, f"🪓 {actor} hat einen Kick gemacht → gebannt")
     except:
         pass
 
 # =============================
-# COMMANDS (UPDATED /send ONLY)
+# CALL COMMAND
 # =============================
-@bot.tree.command(
-    name="send",
-    description="Sendet Nachricht",
-    guild=discord.Object(id=ALLOWED_GUILD_ID)
-)
-async def send(interaction: discord.Interaction,
-               channel: discord.TextChannel,
-               message: str,
-               embed: bool = True):   # 🔥 NEU
 
-    if interaction.user.id not in OWNERS:
-        return await interaction.response.send_message("❌ Kein Zugriff", ephemeral=True)
+@bot.command()
+async def call(ctx):
+    if ctx.guild.id != ALLOWED_GUILD_ID:
+        return
 
-    if embed:
-        emb = discord.Embed(
-            description=message,
-            color=discord.Color.from_rgb(0, 0, 0)
-        )
-        await channel.send(embed=emb)
-    else:
-        await channel.send(message)
+    if not is_owner(ctx.author.id):
+        return await ctx.send("❌ Kein Zugriff")
 
-    await interaction.response.send_message("✅ Gesendet", ephemeral=True)
+    channel = bot.get_channel(CALL_VOICE_CHANNEL_ID)
+
+    try:
+        vc = ctx.voice_client
+
+        if vc and vc.is_connected():
+            await vc.move_to(channel)
+        else:
+            await channel.connect()
+
+        await send_log(ctx.guild, "📞 Bot im Voice Call")
+        await ctx.send("✅ Connected")
+
+    except Exception as e:
+        await ctx.send(f"❌ Fehler: {e}")
 
 # =============================
 # START
 # =============================
+
 bot.run(TOKEN)
