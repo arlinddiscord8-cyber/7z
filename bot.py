@@ -19,7 +19,6 @@ OWNERS = {
     1235586743991009372
 }
 
-WELCOME_CHANNEL_ID = 1510606440006422589
 CALL_VOICE_CHANNEL_ID = 1510715789567590630
 
 # =============================
@@ -31,7 +30,7 @@ USE_EMBEDS = True
 LOG_THEME = "black"  # "black" oder "white"
 
 # =============================
-# VOICE KEEP ALIVE
+# VOICE
 # =============================
 
 VOICE_ALWAYS_ON = True
@@ -46,7 +45,6 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 ping_tracker = defaultdict(list)
 action_tracker = defaultdict(list)
-category_backup = {}
 
 # =============================
 # HELPERS
@@ -90,7 +88,7 @@ async def send_log(guild, message: str):
         pass
 
 # =============================
-# VOICE KEEP ALIVE LOOP
+# VOICE KEEP ALIVE (FIXED)
 # =============================
 
 async def voice_keep_alive():
@@ -102,28 +100,33 @@ async def voice_keep_alive():
         try:
             channel = bot.get_channel(CALL_VOICE_CHANNEL_ID)
 
-            if channel:
-                if not bot.voice_clients:
-                    try:
-                        voice_client = await channel.connect()
-                    except:
-                        pass
-                else:
-                    vc = bot.voice_clients[0]
-                    if not vc.is_connected():
-                        try:
-                            await vc.disconnect()
-                        except:
-                            pass
-                        try:
-                            voice_client = await channel.connect()
-                        except:
-                            pass
+            if not channel:
+                await asyncio.sleep(10)
+                continue
+
+            vc = discord.utils.get(bot.voice_clients, guild=channel.guild)
+
+            if vc is None:
+                try:
+                    voice_client = await channel.connect()
+                except:
+                    pass
+
+            elif not vc.is_connected():
+                try:
+                    await vc.disconnect()
+                except:
+                    pass
+
+                try:
+                    voice_client = await channel.connect()
+                except:
+                    pass
 
         except:
             pass
 
-        await asyncio.sleep(15)
+        await asyncio.sleep(20)
 
 # =============================
 # READY
@@ -139,10 +142,10 @@ async def on_ready():
     except Exception as e:
         print(e)
 
-    bot.loop.create_task(voice_keep_alive())
+    asyncio.create_task(voice_keep_alive())
 
 # =============================
-# ON MESSAGE (ANTI PING)
+# ON MESSAGE
 # =============================
 
 @bot.event
@@ -153,196 +156,39 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    if is_owner(message.author.id):
-        await bot.process_commands(message)
-        return
-
-    if message.mention_everyone:
-        now = datetime.utcnow()
-        uid = message.author.id
-
-        ping_tracker[uid].append(now)
-        ping_tracker[uid] = [t for t in ping_tracker[uid] if now - t < timedelta(seconds=10)]
-
-        if len(ping_tracker[uid]) >= 2:
-            try:
-                await message.delete()
-                await message.guild.ban(message.author, reason="Mass Ping")
-
-                await send_log(message.guild, f"🚨 {message.author} wurde wegen Mass Ping gebannt")
-
-            except:
-                pass
-            ping_tracker[uid].clear()
-
     await bot.process_commands(message)
 
 # =============================
-# BOT ADD PROTECTION
+# /SEND FIXED
 # =============================
 
-@bot.event
-async def on_member_join(member):
-    if member.guild.id != ALLOWED_GUILD_ID:
-        return
+@bot.tree.command(
+    name="send",
+    description="Sendet Nachricht",
+    guild=discord.Object(id=ALLOWED_GUILD_ID)
+)
+async def send(interaction: discord.Interaction,
+               channel: discord.TextChannel,
+               message: str,
+               embed: bool = True):
 
-    if not member.bot:
-        return
-
-    await asyncio.sleep(0.3)
-
-    entry = await get_latest_audit(member.guild, discord.AuditLogAction.bot_add)
-    if not entry:
-        return
-
-    inviter = entry.user
-
-    if not inviter or inviter.id in OWNERS or inviter.bot:
-        return
+    if interaction.user.id not in OWNERS:
+        return await interaction.response.send_message("❌ Kein Zugriff", ephemeral=True)
 
     try:
-        await member.guild.ban(member, reason="Unauthorized Bot")
-        await member.guild.ban(inviter, reason="Bot Invite")
+        if embed:
+            emb = discord.Embed(
+                description=message,
+                color=discord.Color.from_rgb(0, 0, 0)
+            )
+            await channel.send(embed=emb)
+        else:
+            await channel.send(message)
 
-        await send_log(member.guild, f"🤖 Bot {member} wurde entfernt + Inviter {inviter} gebannt")
+        await interaction.response.send_message("✅ Gesendet", ephemeral=True)
 
-    except:
-        pass
-
-# =============================
-# CHANNEL DELETE PROTECTION
-# =============================
-
-@bot.event
-async def on_guild_channel_delete(channel):
-    if channel.guild.id != ALLOWED_GUILD_ID:
-        return
-
-    guild = channel.guild
-    await asyncio.sleep(0.2)
-
-    entry = await get_latest_audit(guild, discord.AuditLogAction.channel_delete)
-    if not entry:
-        return
-
-    user = entry.user
-    if not user or user.id in OWNERS or user.bot:
-        return
-
-    try:
-        await guild.ban(user, reason="Channel deleted")
-        await send_log(guild, f"🧨 {user} hat einen Channel gelöscht und wurde gebannt")
-    except:
-        pass
-
-# =============================
-# WEBHOOK PROTECTION
-# =============================
-
-@bot.event
-async def on_webhooks_update(channel):
-    if channel.guild.id != ALLOWED_GUILD_ID:
-        return
-
-    await asyncio.sleep(0.2)
-
-    entry = await get_latest_audit(channel.guild, discord.AuditLogAction.webhook_create)
-    if not entry:
-        return
-
-    user = entry.user
-    if not user or user.id in OWNERS or user.bot:
-        return
-
-    try:
-        webhooks = await channel.webhooks()
-        for hook in webhooks:
-            await hook.delete(reason="Anti-Webhook")
-
-        await channel.guild.ban(user, reason="Webhook created")
-
-        await send_log(channel.guild, f"🔗 Webhook von {user} gelöscht + gebannt")
-
-    except:
-        pass
-
-# =============================
-# ROLE DELETE PROTECTION
-# =============================
-
-@bot.event
-async def on_guild_role_delete(role):
-    if role.guild.id != ALLOWED_GUILD_ID:
-        return
-
-    await asyncio.sleep(0.2)
-
-    entry = await get_latest_audit(role.guild, discord.AuditLogAction.role_delete)
-    if not entry:
-        return
-
-    user = entry.user
-    if not user or user.id in OWNERS or user.bot:
-        return
-
-    try:
-        await role.guild.ban(user, reason="Role deleted")
-
-        await send_log(role.guild, f"🧷 {user} hat eine Rolle gelöscht")
-
-    except:
-        pass
-
-# =============================
-# BAN DETECTION
-# =============================
-
-@bot.event
-async def on_member_ban(guild, user):
-    if guild.id != ALLOWED_GUILD_ID:
-        return
-
-    await asyncio.sleep(0.5)
-
-    entry = await get_latest_audit(guild, discord.AuditLogAction.ban)
-    if not entry:
-        return
-
-    actor = entry.user
-    if not actor or actor.id in OWNERS or actor.bot:
-        return
-
-    try:
-        await guild.ban(actor, reason="Unauthorized Ban")
-        await send_log(guild, f"🚫 {actor} hat einen Ban gemacht → gebannt")
-    except:
-        pass
-
-# =============================
-# KICK DETECTION
-# =============================
-
-@bot.event
-async def on_member_remove(member):
-    guild = member.guild
-    if guild.id != ALLOWED_GUILD_ID:
-        return
-
-    await asyncio.sleep(0.2)
-
-    entry = await get_latest_audit(guild, discord.AuditLogAction.kick)
-    if not entry or entry.target.id != member.id:
-        return
-
-    actor = entry.user
-    if not actor or actor.id in OWNERS or actor.bot:
-        return
-
-    try:
-        await guild.ban(actor, reason="Unauthorized Kick")
-        await send_log(guild, f"🪓 {actor} hat einen Kick gemacht → gebannt")
-    except:
-        pass
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Fehler: {e}", ephemeral=True)
 
 # =============================
 # CALL COMMAND
