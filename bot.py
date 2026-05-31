@@ -4,11 +4,13 @@ from discord import app_commands
 from collections import defaultdict
 from datetime import datetime, timedelta
 import asyncio
+import os
 
+TOKEN = os.getenv("TOKEN")
 # =============================
 # CONFIG
 # =============================
-TOKEN = os.getenv("TOKEN")
+  
 
 ALLOWED_GUILD_ID = 1510606068311527484
 
