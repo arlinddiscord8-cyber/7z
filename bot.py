@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime
 import asyncio
 import os
 
@@ -21,17 +21,7 @@ OWNERS = {
 
 CALL_VOICE_CHANNEL_ID = 1510715789567590630
 
-# =============================
-# LOG CONFIG
-# =============================
-
 LOG_CHANNEL_ID = 1510606418888360101
-USE_EMBEDS = True
-LOG_THEME = "black"  # "black" oder "white"
-
-# =============================
-# VOICE
-# =============================
 
 VOICE_ALWAYS_ON = True
 voice_client = None
@@ -43,9 +33,6 @@ voice_client = None
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-ping_tracker = defaultdict(list)
-action_tracker = defaultdict(list)
-
 # =============================
 # HELPERS
 # =============================
@@ -53,40 +40,17 @@ action_tracker = defaultdict(list)
 def is_owner(user_id: int):
     return user_id in OWNERS
 
-async def get_latest_audit(guild, action):
-    try:
-        return await guild.audit_logs(limit=1, action=action).__anext__()
-    except:
-        return None
-
-# =============================
-# EMBED COLOR (BLACK / WHITE)
-# =============================
-
-def get_embed_color():
-    if LOG_THEME.lower() == "white":
+def get_color(color: str):
+    if color == "white":
         return discord.Color.from_rgb(255, 255, 255)
     return discord.Color.from_rgb(0, 0, 0)
 
-# =============================
-# LOG SYSTEM
-# =============================
-
-async def send_log(guild, message: str):
+async def send_log(guild, text):
     channel = guild.get_channel(LOG_CHANNEL_ID)
     if not channel:
         return
-
     try:
-        if USE_EMBEDS:
-            embed = discord.Embed(
-                description=message,
-                color=get_embed_color()
-            )
-            embed.timestamp = datetime.utcnow()
-            await channel.send(embed=embed)
-        else:
-            await channel.send(message)
+        await channel.send(text)
     except:
         pass
 
@@ -103,28 +67,24 @@ async def voice_keep_alive():
         try:
             channel = bot.get_channel(CALL_VOICE_CHANNEL_ID)
 
-            if not channel:
-                await asyncio.sleep(10)
-                continue
+            if channel:
+                vc = discord.utils.get(bot.voice_clients, guild=channel.guild)
 
-            vc = discord.utils.get(bot.voice_clients, guild=channel.guild)
+                if vc is None:
+                    try:
+                        voice_client = await channel.connect()
+                    except:
+                        pass
 
-            if vc is None:
-                try:
-                    voice_client = await channel.connect()
-                except:
-                    pass
-
-            elif not vc.is_connected():
-                try:
-                    await vc.disconnect()
-                except:
-                    pass
-
-                try:
-                    voice_client = await channel.connect()
-                except:
-                    pass
+                elif not vc.is_connected():
+                    try:
+                        await vc.disconnect()
+                    except:
+                        pass
+                    try:
+                        voice_client = await channel.connect()
+                    except:
+                        pass
 
         except:
             pass
@@ -138,31 +98,15 @@ async def voice_keep_alive():
 @bot.event
 async def on_ready():
     print(f"✅ Online als {bot.user}")
-
     try:
         await bot.tree.sync(guild=discord.Object(id=ALLOWED_GUILD_ID))
-        print("✅ Slashcommands synced")
-    except Exception as e:
-        print(e)
+    except:
+        pass
 
     asyncio.create_task(voice_keep_alive())
 
 # =============================
-# ON MESSAGE
-# =============================
-
-@bot.event
-async def on_message(message):
-    if not message.guild or message.guild.id != ALLOWED_GUILD_ID:
-        return
-
-    if message.author.bot:
-        return
-
-    await bot.process_commands(message)
-
-# =============================
-# /SEND (FIXED + BLACK/WHITE EMBED)
+# /SEND (FULL FIX MIT AUSWAHL)
 # =============================
 
 @bot.tree.command(
@@ -170,10 +114,13 @@ async def on_message(message):
     description="Sendet Nachricht",
     guild=discord.Object(id=ALLOWED_GUILD_ID)
 )
-async def send(interaction: discord.Interaction,
-               channel: discord.TextChannel,
-               message: str,
-               embed: bool = True):
+async def send(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel,
+    message: str,
+    embed: bool = True,
+    color: str = "black"  # "black" oder "white"
+):
 
     if interaction.user.id not in OWNERS:
         return await interaction.response.send_message("❌ Kein Zugriff", ephemeral=True)
@@ -182,19 +129,22 @@ async def send(interaction: discord.Interaction,
         if embed:
             emb = discord.Embed(
                 description=message,
-                color=get_embed_color()
+                color=get_color(color.lower())
             )
             await channel.send(embed=emb)
         else:
             await channel.send(message)
 
-        await interaction.response.send_message("✅ Gesendet", ephemeral=True)
+        await interaction.response.send_message(
+            f"✅ Gesendet | Embed: {embed} | Farbe: {color}",
+            ephemeral=True
+        )
 
     except Exception as e:
         await interaction.response.send_message(f"❌ Fehler: {e}", ephemeral=True)
 
 # =============================
-# !CALL (VOICE JOIN)
+# !CALL
 # =============================
 
 @bot.command()
