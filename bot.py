@@ -1,8 +1,7 @@
 import discord
 from discord.ext import commands
-from discord import app_commands
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 import asyncio
 import os
 
@@ -20,7 +19,6 @@ OWNERS = {
 }
 
 CALL_VOICE_CHANNEL_ID = 1510715789567590630
-
 LOG_CHANNEL_ID = 1510606418888360101
 
 VOICE_ALWAYS_ON = True
@@ -33,12 +31,21 @@ voice_client = None
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+ping_tracker = defaultdict(list)
+action_tracker = defaultdict(list)
+
 # =============================
 # HELPERS
 # =============================
 
 def is_owner(user_id: int):
     return user_id in OWNERS
+
+async def get_latest_audit(guild, action):
+    try:
+        return await guild.audit_logs(limit=1, action=action).__anext__()
+    except:
+        return None
 
 def get_color(color: str):
     if color == "white":
@@ -47,15 +54,27 @@ def get_color(color: str):
 
 async def send_log(guild, text):
     channel = guild.get_channel(LOG_CHANNEL_ID)
-    if not channel:
-        return
-    try:
-        await channel.send(text)
-    except:
-        pass
+    if channel:
+        try:
+            await channel.send(text)
+        except:
+            pass
 
 # =============================
-# VOICE KEEP ALIVE (STABIL)
+# READY
+# =============================
+
+@bot.event
+async def on_ready():
+    print(f"✅ Online als {bot.user}")
+    try:
+        await bot.tree.sync(guild=discord.Object(id=ALLOWED_GUILD_ID))
+    except:
+        pass
+    asyncio.create_task(voice_keep_alive())
+
+# =============================
+# VOICE SYSTEM (STABIL)
 # =============================
 
 async def voice_keep_alive():
@@ -92,21 +111,120 @@ async def voice_keep_alive():
         await asyncio.sleep(20)
 
 # =============================
-# READY
+# SECURITY SYSTEM
 # =============================
 
 @bot.event
-async def on_ready():
-    print(f"✅ Online als {bot.user}")
+async def on_guild_channel_delete(channel):
+    if channel.guild.id != ALLOWED_GUILD_ID:
+        return
+
+    await asyncio.sleep(0.2)
+    entry = await get_latest_audit(channel.guild, discord.AuditLogAction.channel_delete)
+    if not entry:
+        return
+
+    user = entry.user
+    if not user or user.id in OWNERS or user.bot:
+        return
+
     try:
-        await bot.tree.sync(guild=discord.Object(id=ALLOWED_GUILD_ID))
+        await channel.guild.ban(user, reason="Channel Delete")
+        await send_log(channel.guild, f"🧨 {user} hat Channel gelöscht → gebannt")
     except:
         pass
 
-    asyncio.create_task(voice_keep_alive())
+
+@bot.event
+async def on_guild_role_delete(role):
+    if role.guild.id != ALLOWED_GUILD_ID:
+        return
+
+    await asyncio.sleep(0.2)
+    entry = await get_latest_audit(role.guild, discord.AuditLogAction.role_delete)
+    if not entry:
+        return
+
+    user = entry.user
+    if not user or user.id in OWNERS or user.bot:
+        return
+
+    try:
+        await role.guild.ban(user, reason="Role Delete")
+        await send_log(role.guild, f"🧷 {user} hat Role gelöscht → gebannt")
+    except:
+        pass
+
+
+@bot.event
+async def on_webhooks_update(channel):
+    if channel.guild.id != ALLOWED_GUILD_ID:
+        return
+
+    await asyncio.sleep(0.2)
+    entry = await get_latest_audit(channel.guild, discord.AuditLogAction.webhook_create)
+    if not entry:
+        return
+
+    user = entry.user
+    if not user or user.id in OWNERS or user.bot:
+        return
+
+    try:
+        webhooks = await channel.webhooks()
+        for w in webhooks:
+            await w.delete()
+
+        await channel.guild.ban(user, reason="Webhook")
+        await send_log(channel.guild, f"🔗 Webhook Angriff von {user}")
+    except:
+        pass
+
+
+@bot.event
+async def on_member_ban(guild, user):
+    if guild.id != ALLOWED_GUILD_ID:
+        return
+
+    await asyncio.sleep(0.3)
+    entry = await get_latest_audit(guild, discord.AuditLogAction.ban)
+    if not entry:
+        return
+
+    actor = entry.user
+    if not actor or actor.id in OWNERS or actor.bot:
+        return
+
+    try:
+        await guild.ban(actor, reason="Unauthorized Ban")
+        await send_log(guild, f"🚫 {actor} hat Ban gemacht → gebannt")
+    except:
+        pass
+
+
+@bot.event
+async def on_member_remove(member):
+    guild = member.guild
+    if guild.id != ALLOWED_GUILD_ID:
+        return
+
+    await asyncio.sleep(0.2)
+    entry = await get_latest_audit(guild, discord.AuditLogAction.kick)
+    if not entry or entry.target.id != member.id:
+        return
+
+    actor = entry.user
+    if not actor or actor.id in OWNERS or actor.bot:
+        return
+
+    try:
+        await guild.ban(actor, reason="Kick Abuse")
+        await send_log(guild, f"🪓 {actor} hat Kick gemacht → gebannt")
+    except:
+        pass
 
 # =============================
-# /SEND (FULL FIX MIT AUSWAHL)
+# /SEND COMMAND
 # =============================
 
 @bot.tree.command(
@@ -119,7 +237,7 @@ async def send(
     channel: discord.TextChannel,
     message: str,
     embed: bool = True,
-    color: str = "black"  # "black" oder "white"
+    color: str = "black"
 ):
 
     if interaction.user.id not in OWNERS:
@@ -129,16 +247,13 @@ async def send(
         if embed:
             emb = discord.Embed(
                 description=message,
-                color=get_color(color.lower())
+                color=get_color(color)
             )
             await channel.send(embed=emb)
         else:
             await channel.send(message)
 
-        await interaction.response.send_message(
-            f"✅ Gesendet | Embed: {embed} | Farbe: {color}",
-            ephemeral=True
-        )
+        await interaction.response.send_message("✅ Gesendet", ephemeral=True)
 
     except Exception as e:
         await interaction.response.send_message(f"❌ Fehler: {e}", ephemeral=True)
