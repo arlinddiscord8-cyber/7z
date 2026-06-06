@@ -1,14 +1,9 @@
-import sqlite3
 import discord
 from discord.ext import commands
-from discord.ui import View, Button
 from collections import defaultdict
 from datetime import datetime, timedelta
 import asyncio
 import os
-import io
-import math
-import re
 
 TOKEN = os.getenv("TOKEN")
 
@@ -27,95 +22,32 @@ CALL_VOICE_CHANNEL_ID   = 1512776116438306816
 LOG_CHANNEL_ID           = 1512582270106468385
 WELCOME_CHANNEL_ID       = 1512774925126078566
 RULES_CHANNEL_ID         = 1512774929253273821
-TICKET_PANEL_CHANNEL_ID  = 1512774944818462741
 TICKET_CATEGORY_ID       = 1512774917479993515
-SUPPORT_ROLE_ID          = 1512774845287497819
-BOOST_CHANNEL_ID         = 1512774965030682665
-AUTO_REACT_CHANNEL_IDS   = {1512774973607907369, 1512774955413147648}
-COUNTING_CHANNEL_ID      = 1512774971712209097
 AUTO_ROLE_ID             = 1512774841005244426
-TRIGGER_ROLE_ID          = 1512774837708525658
-EXTRA_ROLE_ID_1          = 1512774836806619239
-EXTRA_ROLE_ID_2          = 1512775255070867456
 
-VOICE_ALWAYS_ON = True
-voice_client = None
+TRIGGER_ROLE_ID          = 1512774837708525658
+EXTRA_ROLE_1             = 1512774836806619239
+EXTRA_ROLE_2             = 1512775255070867456
+
+INVITE_CHANNEL_ID        = 1512774942184177765
 
 # =============================
-# BOT SETUP
+# BOT
 # =============================
 
 intents = discord.Intents.default()
 intents.members = True
 intents.guilds = True
 intents.message_content = True
-intents.reactions = True
-intents.voice_states = True
-intents.guild_messages = True
 
 bot = commands.Bot(command_prefix=["!", "?"], intents=intents)
 
-timeout_tracker      = defaultdict(list)
-kick_tracker         = defaultdict(list)
-ban_tracker          = defaultdict(list)
-ticket_del_tracker   = defaultdict(list)
-
-counting_state = {
-    "current": 0,
-    "last_user": None,
-    "delete_notice": None,
-}
-
-first_react_announced = set()
-ticket_counter = 0
-
 # =============================
-# INVITE CACHE (NEW SYSTEM)
+# BACKUP STORAGE (RESTORE SYSTEM)
 # =============================
 
-invite_cache = {}
-
-# =============================
-# HELPERS
-# =============================
-
-def is_owner(user_id: int):
-    return user_id in OWNERS
-
-def can_moderate(member):
-    if member.id in OWNERS:
-        return True
-    for role in member.roles:
-        if role.permissions.administrator or role.permissions.manage_messages:
-            return True
-    return False
-
-def get_color(color: str):
-    if color == "white":
-        return discord.Color.from_rgb(255, 255, 255)
-    return discord.Color.from_rgb(0, 0, 0)
-
-async def security_log(guild, text):
-    channel = guild.get_channel(LOG_CHANNEL_ID)
-    if channel:
-        try:
-            await channel.send(text)
-        except Exception:
-            pass
-
-def eval_math_expression(expr: str):
-    try:
-        expr = expr.strip()
-        allowed = set("0123456789+-*/(). ")
-        if not all(c in allowed for c in expr):
-            return None
-        result = eval(expr, {"__builtins__": {}}, {})
-        if isinstance(result, (int, float)) and not isinstance(result, bool):
-            if result == int(result):
-                return int(result)
-    except Exception:
-        pass
-    return None
+channel_backup = {}
+role_backup = {}
 
 # =============================
 # READY
@@ -123,25 +55,107 @@ def eval_math_expression(expr: str):
 
 @bot.event
 async def on_ready():
-    print(f"✅ Online als {bot.user}")
-
-    try:
-        await bot.tree.sync(guild=discord.Object(id=ALLOWED_GUILD_ID))
-    except Exception:
-        pass
-
-    asyncio.create_task(voice_keep_alive())
-
-    # INVITE CACHE LOAD
-    for guild in bot.guilds:
-        try:
-            invites = await guild.invites()
-            invite_cache[guild.id] = {inv.code: inv.uses for inv in invites}
-        except Exception:
-            invite_cache[guild.id] = {}
+    print(f"Online als {bot.user}")
 
 # =============================
-# JOIN EVENT (NEW INVITE EMBED SYSTEM)
+# TRIGGER ROLE SYSTEM
+# =============================
+
+@bot.event
+async def on_member_update(before, after):
+    before_roles = {r.id for r in before.roles}
+    after_roles = {r.id for r in after.roles}
+
+    if TRIGGER_ROLE_ID in after_roles and TRIGGER_ROLE_ID not in before_roles:
+        for rid in (EXTRA_ROLE_1, EXTRA_ROLE_2):
+            role = after.guild.get_role(rid)
+            if role:
+                try:
+                    await after.add_roles(role)
+                except:
+                    pass
+
+# =============================
+# /SEND COMMAND
+# =============================
+
+@bot.tree.command(
+    name="send",
+    description="Send message",
+    guild=discord.Object(id=ALLOWED_GUILD_ID)
+)
+async def send_cmd(interaction: discord.Interaction, channel: discord.TextChannel, message: str):
+    if interaction.user.id not in OWNERS:
+        return await interaction.response.send_message("❌ Kein Zugriff", ephemeral=True)
+
+    await channel.send(message)
+    await interaction.response.send_message("✅ Gesendet", ephemeral=True)
+
+# =============================
+# BACKUP BEFORE DELETE
+# =============================
+
+@bot.event
+async def on_guild_channel_delete(channel):
+    if channel.guild.id != ALLOWED_GUILD_ID:
+        return
+
+    channel_backup[channel.id] = {
+        "name": channel.name,
+        "type": str(channel.type),
+        "category": channel.category_id
+    }
+
+    await asyncio.sleep(1)
+
+    try:
+        if channel_backup.get(channel.id):
+            data = channel_backup[channel.id]
+            guild = channel.guild
+
+            if data["type"] == "text":
+                await guild.create_text_channel(
+                    name=data["name"],
+                    category=guild.get_channel(data["category"])
+                )
+            elif "voice" in data["type"]:
+                await guild.create_voice_channel(
+                    name=data["name"],
+                    category=guild.get_channel(data["category"])
+                )
+    except:
+        pass
+
+# =============================
+# ROLE BACKUP / RESTORE
+# =============================
+
+@bot.event
+async def on_guild_role_delete(role):
+    if role.guild.id != ALLOWED_GUILD_ID:
+        return
+
+    role_backup[role.id] = {
+        "name": role.name,
+        "permissions": role.permissions,
+        "color": role.color,
+        "hoist": role.hoist,
+        "mentionable": role.mentionable
+    }
+
+    try:
+        await role.guild.create_role(
+            name=role_backup[role.id]["name"],
+            permissions=role_backup[role.id]["permissions"],
+            color=role_backup[role.id]["color"],
+            hoist=role_backup[role.id]["hoist"],
+            mentionable=role_backup[role.id]["mentionable"]
+        )
+    except:
+        pass
+
+# =============================
+# WELCOME
 # =============================
 
 @bot.event
@@ -149,70 +163,27 @@ async def on_member_join(member):
     if member.guild.id != ALLOWED_GUILD_ID:
         return
 
-    guild = member.guild
-    inviter_name = "Unknown"
-    invite_count = 0
-
-    try:
-        new_invites = await guild.invites()
-        old_invites = invite_cache.get(guild.id, {})
-
-        used_invite = None
-
-        for inv in new_invites:
-            if inv.uses > old_invites.get(inv.code, 0):
-                used_invite = inv
-                break
-
-        invite_cache[guild.id] = {inv.code: inv.uses for inv in new_invites}
-
-        if used_invite and used_invite.inviter:
-            inviter_name = used_invite.inviter.name
-            invite_count = used_invite.uses
-
-    except Exception:
-        pass
-
-    # Auto role
-    role = guild.get_role(AUTO_ROLE_ID)
+    role = member.guild.get_role(AUTO_ROLE_ID)
     if role:
         try:
             await member.add_roles(role)
-        except Exception:
+        except:
             pass
 
-    channel = guild.get_channel(WELCOME_CHANNEL_ID)
+    channel = member.guild.get_channel(WELCOME_CHANNEL_ID)
 
     if channel:
         embed = discord.Embed(
-            title="New Member on EH / 7zarnova ᵛ²",
+            title="Willkommen 👋",
             description=(
-                f"**{member.mention}** just joined.\n\n"
-                f"They were invited by **{inviter_name}** who now has **{invite_count} invites** !"
-            ),
-            color=discord.Color.from_rgb(149, 165, 166)
+                f"Hey {member.mention},\n\n"
+                "Wir freuen uns dich im **7zarnova** Server begrüßen zu dürfen!\n"
+                "Bitte beachte die Regeln!\n\n"
+                "• Sei nett\n• Viel Spaß!"
+            )
         )
-
-        # Avatar oben rechts
         embed.set_thumbnail(url=member.display_avatar.url)
-
-        try:
-            await channel.send(embed=embed)
-        except Exception:
-            pass
-
-# =============================
-# REMOVED COMMANDS
-# =============================
-
-# ❌ /invite removed
-# ❌ /leaderboard removed
-
-# =============================
-# REST OF YOUR BOT (UNCHANGED)
-# =============================
-
-# >>> HIER BLEIBT DEIN GANZER REST CODE (Tickets, Security, Counting usw.)
+        await channel.send(embed=embed)
 
 # =============================
 # START
