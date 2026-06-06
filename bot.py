@@ -50,19 +50,16 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 ping_tracker   = defaultdict(list)
 action_tracker = defaultdict(list)
 
-# Rate-limit tracker: key = user_id, value = list of timestamps
 timeout_tracker = defaultdict(list)
 kick_tracker    = defaultdict(list)
 ban_tracker     = defaultdict(list)
 
-# Counting state
 counting_state = {
     "current": 0,
     "last_user": None,
 }
 
-# Custom emoji cache
-custom_check_emoji = None
+first_react_announced = set()
 
 # =============================
 # HELPERS
@@ -91,7 +88,6 @@ async def send_log(guild, text):
             pass
 
 def eval_math_expression(expr: str):
-    """Safely evaluate a simple math expression and return the integer result, or None."""
     try:
         expr = expr.strip()
         allowed = set("0123456789+-*/(). ")
@@ -104,59 +100,6 @@ def eval_math_expression(expr: str):
     except Exception:
         pass
     return None
-
-async def get_or_create_check_emoji(guild):
-    global custom_check_emoji
-    if custom_check_emoji is not None:
-        return custom_check_emoji
-    try:
-        for emoji in guild.emojis:
-            if emoji.name == "white_check":
-                custom_check_emoji = emoji
-                return custom_check_emoji
-        import struct, zlib
-
-        def create_check_png():
-            w, h = 16, 16
-            img = [[(149, 165, 166)] * w for _ in range(h)]
-            check_pixels = [
-                (3,9),(4,10),(5,11),(6,12),(7,11),(8,10),(9,9),(10,8),(11,7),(12,6),(13,5)
-            ]
-            for x, y in check_pixels:
-                if 0 <= x < w and 0 <= y < h:
-                    img[y][x] = (255, 255, 255)
-            check_pixels2 = [(4,11),(5,12),(6,13),(7,12),(8,11),(9,10),(10,9),(11,8),(12,7),(13,6)]
-            for x, y in check_pixels2:
-                if 0 <= x < w and 0 <= y < h:
-                    img[y][x] = (255, 255, 255)
-
-            def png_chunk(chunk_type, data):
-                c = chunk_type + data
-                return struct.pack(">I", len(data)) + c + struct.pack(">I", zlib.crc32(c) & 0xffffffff)
-
-            raw = b""
-            for row in img:
-                raw += b"\x00"
-                for r, g, b in row:
-                    raw += bytes([r, g, b])
-
-            compressed = zlib.compress(raw)
-            ihdr_data = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
-            png = b"\x89PNG\r\n\x1a\n"
-            png += png_chunk(b"IHDR", ihdr_data)
-            png += png_chunk(b"IDAT", compressed)
-            png += png_chunk(b"IEND", b"")
-            return png
-
-        png_bytes = create_check_png()
-        custom_check_emoji = await guild.create_custom_emoji(
-            name="white_check",
-            image=png_bytes,
-            reason="Bot auto-created check emoji"
-        )
-        return custom_check_emoji
-    except Exception:
-        return None
 
 # =============================
 # READY
@@ -269,7 +212,7 @@ async def on_member_update(before, after):
         await send_log(after.guild, f"🎭 {after} hat Trigger-Rolle erhalten → Extra-Rollen vergeben.")
 
 # =============================
-# AUTO-REACT
+# AUTO-REACT & MESSAGES
 # =============================
 
 @bot.event
@@ -284,15 +227,14 @@ async def on_message(message):
         return
 
     if message.channel.id in AUTO_REACT_CHANNEL_IDS:
-        emoji = await get_or_create_check_emoji(guild)
-        try:
-            if emoji:
-                await message.add_reaction(emoji)
-            else:
-                await message.add_reaction("✅")
-        except Exception:
+        if message.channel.id == 1512774955413147648:
             try:
                 await message.add_reaction("✅")
+            except Exception:
+                pass
+        else:
+            try:
+                await message.add_reaction("✔️")
             except Exception:
                 pass
 
@@ -341,17 +283,10 @@ async def handle_counting(message):
     if value == expected:
         counting_state["current"] = expected
         counting_state["last_user"] = message.author.id
-        emoji = await get_or_create_check_emoji(message.guild)
         try:
-            if emoji:
-                await message.add_reaction(emoji)
-            else:
-                await message.add_reaction("✅")
+            await message.add_reaction("✔️")
         except Exception:
-            try:
-                await message.add_reaction("✅")
-            except Exception:
-                pass
+            pass
     else:
         try:
             note = await message.channel.send(
@@ -374,6 +309,27 @@ async def on_message_delete(message):
             )
         except Exception:
             pass
+
+# =============================
+# FIRST REACTOR ANNOUNCEMENT
+# =============================
+
+@bot.event
+async def on_reaction_add(reaction, user):
+    if user.bot:
+        return
+    if not reaction.message.guild or reaction.message.guild.id != ALLOWED_GUILD_ID:
+        return
+    if reaction.message.channel.id != 1512774955413147648:
+        return
+    msg_id = reaction.message.id
+    if msg_id in first_react_announced:
+        return
+    first_react_announced.add(msg_id)
+    try:
+        await reaction.message.channel.send(f"{user.mention} war 🥇!")
+    except Exception:
+        pass
 
 # =============================
 # TICKET SYSTEM
