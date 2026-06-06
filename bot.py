@@ -69,7 +69,7 @@ intents.voice_states   = True
 intents.guild_messages = True
 intents.moderation     = True
 
-bot = commands.Bot(command_prefix=["!", "?"], intents=intents)
+bot = commands.Bot(command_prefix=["!", "?"], intents=intents, help_command=None)
 
 # trackers
 timeout_tracker        = defaultdict(list)
