@@ -1,3 +1,4 @@
+import sqlite3
 import discord
 from discord.ext import commands
 from discord.ui import View, Button
@@ -36,6 +37,7 @@ AUTO_ROLE_ID             = 1512774841005244426
 TRIGGER_ROLE_ID          = 1512774837708525658
 EXTRA_ROLE_ID_1          = 1512774836806619239
 EXTRA_ROLE_ID_2          = 1512775255070867456
+INVITE_CHANNEL_ID        = 1512774942184177765
 
 VOICE_ALWAYS_ON = True
 voice_client = None
@@ -44,15 +46,19 @@ voice_client = None
 # BOT SETUP
 # =============================
 
-intents = discord.Intents.all()
-bot = commands.Bot(command_prefix="!", intents=intents)
+intents = discord.Intents.default()
+intents.members = True
+intents.guilds = True
+intents.message_content = True
+intents.reactions = True
+intents.voice_states = True
+intents.guild_messages = True
+bot = commands.Bot(command_prefix=["!", "?"], intents=intents)
 
-ping_tracker   = defaultdict(list)
-action_tracker = defaultdict(list)
-
-timeout_tracker = defaultdict(list)
-kick_tracker    = defaultdict(list)
-ban_tracker     = defaultdict(list)
+timeout_tracker      = defaultdict(list)
+kick_tracker         = defaultdict(list)
+ban_tracker          = defaultdict(list)
+ticket_del_tracker   = defaultdict(list)
 
 counting_state = {
     "current": 0,
@@ -61,6 +67,46 @@ counting_state = {
 }
 
 first_react_announced = set()
+ticket_counter = 0
+
+# =============================
+# INVITE DATABASE
+# =============================
+
+_db = sqlite3.connect("invites.db")
+_cur = _db.cursor()
+_cur.execute("""
+CREATE TABLE IF NOT EXISTS invites (
+    guild_id INTEGER,
+    user_id  INTEGER,
+    invites  INTEGER DEFAULT 0,
+    PRIMARY KEY (guild_id, user_id)
+)
+""")
+_db.commit()
+
+def _add_invite(guild_id: int, user_id: int, amount: int = 1):
+    _cur.execute("""
+        INSERT INTO invites (guild_id, user_id, invites)
+        VALUES (?, ?, ?)
+        ON CONFLICT(guild_id, user_id)
+        DO UPDATE SET invites = invites + ?
+    """, (guild_id, user_id, amount, amount))
+    _db.commit()
+
+def _get_invites(guild_id: int, user_id: int) -> int:
+    _cur.execute("SELECT invites FROM invites WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
+    row = _cur.fetchone()
+    return row[0] if row else 0
+
+def _get_top(guild_id: int, limit: int = 10):
+    _cur.execute("""
+        SELECT user_id, invites FROM invites
+        WHERE guild_id = ? ORDER BY invites DESC LIMIT ?
+    """, (guild_id, limit))
+    return _cur.fetchall()
+
+invite_cache = {}
 
 # =============================
 # HELPERS
@@ -68,6 +114,14 @@ first_react_announced = set()
 
 def is_owner(user_id: int):
     return user_id in OWNERS
+
+def can_moderate(member):
+    if member.id in OWNERS:
+        return True
+    for role in member.roles:
+        if role.permissions.administrator or role.permissions.manage_messages:
+            return True
+    return False
 
 async def get_latest_audit(guild, action):
     try:
@@ -80,7 +134,7 @@ def get_color(color: str):
         return discord.Color.from_rgb(255, 255, 255)
     return discord.Color.from_rgb(0, 0, 0)
 
-async def send_log(guild, text):
+async def security_log(guild, text):
     channel = guild.get_channel(LOG_CHANNEL_ID)
     if channel:
         try:
@@ -114,6 +168,13 @@ async def on_ready():
     except Exception:
         pass
     asyncio.create_task(voice_keep_alive())
+
+    for guild in bot.guilds:
+        try:
+            invites = await guild.invites()
+            invite_cache[guild.id] = {inv.code: inv.uses for inv in invites}
+        except Exception:
+            pass
 
 # =============================
 # VOICE SYSTEM (STABIL)
@@ -179,7 +240,30 @@ async def on_member_join(member):
         except Exception:
             pass
 
-    await send_log(member.guild, f"📥 {member} ist dem Server beigetreten.")
+    # Invite tracking (SQLite)
+    try:
+        new_invites = await member.guild.invites()
+        old_cache = invite_cache.get(member.guild.id, {})
+        used_invite = None
+
+        for inv in new_invites:
+            if inv.uses > old_cache.get(inv.code, 0):
+                used_invite = inv
+                break
+
+        invite_cache[member.guild.id] = {inv.code: inv.uses for inv in new_invites}
+
+        if used_invite and used_invite.inviter:
+            _add_invite(member.guild.id, used_invite.inviter.id, 1)
+            total = _get_invites(member.guild.id, used_invite.inviter.id)
+            invite_ch = member.guild.get_channel(INVITE_CHANNEL_ID)
+            if invite_ch:
+                await invite_ch.send(
+                    f"📨 {used_invite.inviter.mention} has invited {member.mention}, "
+                    f"he has now **{total}** invites"
+                )
+    except Exception:
+        pass
 
 # =============================
 # BOOST NOTIFICATION
@@ -194,10 +278,9 @@ async def on_member_update(before, after):
         boost_channel = after.guild.get_channel(BOOST_CHANNEL_ID)
         if boost_channel:
             try:
-                await boost_channel.send(f"danke 🫶🏻!")
+                await boost_channel.send("danke 🫶🏻!")
             except Exception:
                 pass
-        await send_log(after.guild, f"💎 {after} hat den Server geboosted!")
 
     before_ids = {r.id for r in before.roles}
     after_ids  = {r.id for r in after.roles}
@@ -210,7 +293,6 @@ async def on_member_update(before, after):
                     await after.add_roles(extra_role, reason="Trigger-Rolle vergeben")
                 except Exception:
                     pass
-        await send_log(after.guild, f"🎭 {after} hat Trigger-Rolle erhalten → Extra-Rollen vergeben.")
 
 # =============================
 # AUTO-REACT & MESSAGES
@@ -351,8 +433,23 @@ class TicketButton(View):
 
     @discord.ui.button(label="Ticket erstellen", emoji="📧", style=discord.ButtonStyle.blurple, custom_id="ticket_create")
     async def create_ticket(self, interaction: discord.Interaction, button: Button):
+        global ticket_counter
+
         guild = interaction.guild
         category = guild.get_channel(TICKET_CATEGORY_ID)
+
+        if category:
+            for ch in category.text_channels:
+                if ch.name.startswith("ticket-"):
+                    overwrite = ch.overwrites_for(interaction.user)
+                    if overwrite.read_messages:
+                        return await interaction.response.send_message(
+                            f"❌ Du hast bereits ein offenes Ticket: {ch.mention}",
+                            ephemeral=True
+                        )
+
+        ticket_counter += 1
+        current_ticket_num = ticket_counter
         support_role = guild.get_role(SUPPORT_ROLE_ID)
 
         overwrites = {
@@ -369,7 +466,7 @@ class TicketButton(View):
 
         try:
             ticket_channel = await guild.create_text_channel(
-                name=f"ticket-{interaction.user.name}",
+                name=f"ticket-{current_ticket_num}",
                 category=category,
                 overwrites=overwrites,
                 reason=f"Ticket von {interaction.user}"
@@ -385,14 +482,16 @@ class TicketButton(View):
                 color=discord.Color.from_rgb(149, 165, 166)
             )
 
-            ping_text = support_role.mention if support_role else ""
-            await ticket_channel.send(content=ping_text, embed=embed)
+            pings = interaction.user.mention
+            if support_role:
+                pings = f"{support_role.mention} {interaction.user.mention}"
+
+            await ticket_channel.send(content=pings, embed=embed)
 
             await interaction.response.send_message(
                 f"✅ Dein Ticket wurde erstellt: {ticket_channel.mention}",
                 ephemeral=True
             )
-            await send_log(guild, f"🎫 {interaction.user} hat ein Ticket erstellt: {ticket_channel.mention}")
 
         except Exception as e:
             await interaction.response.send_message(f"❌ Fehler beim Erstellen: {e}", ephemeral=True)
@@ -424,7 +523,6 @@ async def ticketpanel(interaction: discord.Interaction):
     try:
         await channel.send(embed=embed, view=TicketButton())
         await interaction.response.send_message("✅ Ticket-Panel gesendet!", ephemeral=True)
-        await send_log(interaction.guild, f"📋 {interaction.user} hat das Ticket-Panel eingerichtet.")
     except Exception as e:
         await interaction.response.send_message(f"❌ Fehler: {e}", ephemeral=True)
 
@@ -455,24 +553,134 @@ async def close(ctx):
     try:
         await ctx.send("🔒 Ticket wird geschlossen...")
         await ctx.channel.set_permissions(ctx.guild.default_role, read_messages=False, send_messages=False)
-        await send_log(ctx.guild, f"🔒 {ctx.author} hat Ticket {ctx.channel.name} geschlossen.")
     except Exception as e:
         await ctx.send(f"❌ Fehler: {e}")
 
 
-@bot.command()
-async def delete(ctx):
+@bot.command(name="delete")
+async def delete_ticket(ctx):
     if ctx.guild.id != ALLOWED_GUILD_ID:
         return
     if not is_ticket_channel(ctx.channel):
         return await ctx.send("❌ Das ist kein Ticket-Kanal.")
     if not can_manage_ticket(ctx.author):
         return await ctx.send("❌ Kein Zugriff.")
+
+    if ctx.author.id not in OWNERS:
+        now = datetime.utcnow()
+        ticket_del_tracker[ctx.author.id] = [
+            t for t in ticket_del_tracker[ctx.author.id]
+            if now - t < timedelta(seconds=30)
+        ]
+        if len(ticket_del_tracker[ctx.author.id]) >= 3:
+            return await ctx.send(
+                "❌ Du kannst nicht mehr als 3 Tickets in 30 Sekunden löschen.",
+                delete_after=5
+            )
+        ticket_del_tracker[ctx.author.id].append(now)
+
     try:
-        await send_log(ctx.guild, f"🗑️ {ctx.author} hat Ticket {ctx.channel.name} gelöscht.")
         await ctx.channel.delete(reason=f"Ticket gelöscht von {ctx.author}")
     except Exception as e:
         await ctx.send(f"❌ Fehler: {e}")
+
+# =============================
+# PURGE COMMAND
+# =============================
+
+@bot.command()
+async def purge(ctx, amount: str = None):
+    if ctx.guild.id != ALLOWED_GUILD_ID:
+        return
+    if not can_moderate(ctx.author):
+        return await ctx.send("❌ Kein Zugriff.")
+
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    if amount is None:
+        return await ctx.send("❌ Verwendung: `?purge all` oder `?purge <Anzahl>`", delete_after=3)
+
+    if amount.lower() == "all":
+        deleted = await ctx.channel.purge(limit=None)
+        note = await ctx.send(f"🗑️ {len(deleted)} Nachrichten gelöscht.")
+        await asyncio.sleep(3)
+        try:
+            await note.delete()
+        except Exception:
+            pass
+    else:
+        try:
+            num = int(amount)
+            if num < 1:
+                return await ctx.send("❌ Zahl muss mindestens 1 sein.", delete_after=3)
+            deleted = await ctx.channel.purge(limit=num)
+            note = await ctx.send(f"🗑️ {len(deleted)} Nachrichten gelöscht.")
+            await asyncio.sleep(3)
+            try:
+                await note.delete()
+            except Exception:
+                pass
+        except ValueError:
+            await ctx.send("❌ Verwendung: `?purge all` oder `?purge <Anzahl>`", delete_after=3)
+
+# =============================
+# ROLE COMMAND
+# =============================
+
+@bot.command(name="role")
+async def role_cmd(ctx, member: discord.Member = None, *, role_name: str = None):
+    if ctx.guild.id != ALLOWED_GUILD_ID:
+        return
+    if not can_moderate(ctx.author):
+        return await ctx.send("❌ Kein Zugriff.")
+    if member is None or role_name is None:
+        return await ctx.send("❌ Verwendung: `?role @user Rollenname`")
+
+    role = discord.utils.find(
+        lambda r: r.name.lower() == role_name.strip().lower(),
+        ctx.guild.roles
+    )
+
+    if role is None:
+        return await ctx.send(f"❌ Rolle **{role_name}** nicht gefunden.")
+
+    try:
+        if role in member.roles:
+            await member.remove_roles(role, reason=f"Entfernt von {ctx.author}")
+            await ctx.send(f"✅ {member.mention} wurde die Rolle **{role.name}** weggenommen.")
+        else:
+            await member.add_roles(role, reason=f"Vergeben von {ctx.author}")
+            await ctx.send(f"✅ {member.mention} wurde die Rolle **{role.name}** hinzugefügt.")
+    except discord.Forbidden:
+        await ctx.send("❌ Ich habe keine Berechtigung, diese Rolle zu vergeben/entfernen.")
+    except Exception as e:
+        await ctx.send(f"❌ Fehler: {e}")
+
+# =============================
+# INVITES COMMAND
+# =============================
+
+@bot.command(name="invites")
+async def invites_cmd(ctx, member: discord.Member = None):
+    if ctx.guild.id != ALLOWED_GUILD_ID:
+        return
+    if member:
+        count = _get_invites(ctx.guild.id, member.id)
+        return await ctx.send(f"📨 {member.mention} hat **{count} Invites**")
+
+    top = _get_top(ctx.guild.id)
+    if not top:
+        return await ctx.send("Noch keine Invites gespeichert.")
+
+    embed = discord.Embed(title="🏆 Invite Leaderboard", color=discord.Color.gold())
+    for i, (user_id, count) in enumerate(top, start=1):
+        user = bot.get_user(user_id)
+        name = user.name if user else f"User {user_id}"
+        embed.add_field(name=f"{i}. {name}", value=f"📨 {count} Invites", inline=False)
+    await ctx.send(embed=embed)
 
 # =============================
 # SECURITY SYSTEM
@@ -491,7 +699,7 @@ async def on_guild_channel_delete(channel):
         return
     try:
         await channel.guild.ban(user, reason="Channel Delete")
-        await send_log(channel.guild, f"🧨 {user} hat Channel gelöscht → gebannt")
+        await security_log(channel.guild, f"🧨 {user} hat Channel gelöscht → gebannt")
     except Exception:
         pass
 
@@ -500,6 +708,13 @@ async def on_guild_channel_delete(channel):
 async def on_guild_role_delete(role):
     if role.guild.id != ALLOWED_GUILD_ID:
         return
+
+    saved_name        = role.name
+    saved_color       = role.color
+    saved_permissions = role.permissions
+    saved_hoist       = role.hoist
+    saved_mentionable = role.mentionable
+
     await asyncio.sleep(0.2)
     entry = await get_latest_audit(role.guild, discord.AuditLogAction.role_delete)
     if not entry:
@@ -507,9 +722,23 @@ async def on_guild_role_delete(role):
     user = entry.user
     if not user or user.id in OWNERS or user.bot:
         return
+
     try:
         await role.guild.ban(user, reason="Role Delete")
-        await send_log(role.guild, f"🧷 {user} hat Role gelöscht → gebannt")
+        await security_log(role.guild, f"🧷 {user} hat Rolle **{saved_name}** gelöscht → gebannt")
+    except Exception:
+        pass
+
+    try:
+        await role.guild.create_role(
+            name=saved_name,
+            color=saved_color,
+            permissions=saved_permissions,
+            hoist=saved_hoist,
+            mentionable=saved_mentionable,
+            reason="Automatische Wiederherstellung (Schutz)"
+        )
+        await security_log(role.guild, f"♻️ Rolle **{saved_name}** wurde automatisch wiederhergestellt.")
     except Exception:
         pass
 
@@ -530,7 +759,7 @@ async def on_webhooks_update(channel):
         for w in webhooks:
             await w.delete()
         await channel.guild.ban(user, reason="Webhook")
-        await send_log(channel.guild, f"🔗 Webhook Angriff von {user}")
+        await security_log(channel.guild, f"🔗 Webhook Angriff von {user} → gebannt")
     except Exception:
         pass
 
@@ -554,11 +783,9 @@ async def on_member_ban(guild, user):
     if len(ban_tracker[actor.id]) >= 2:
         try:
             await guild.ban(actor, reason="Mass Ban (2+ Bans in 20s)")
-            await send_log(guild, f"🚫 {actor} hat 2+ Bans in 20s gemacht → gebannt")
+            await security_log(guild, f"🚫 {actor} hat 2+ Bans in 20s gemacht → gebannt")
         except Exception:
             pass
-    else:
-        await send_log(guild, f"⚠️ {actor} hat einen Ban ausgeführt.")
 
 
 @bot.event
@@ -581,18 +808,9 @@ async def on_member_remove(member):
     if len(kick_tracker[actor.id]) >= 2:
         try:
             await guild.ban(actor, reason="Mass Kick (2+ Kicks in 20s)")
-            await send_log(guild, f"🪓 {actor} hat 2+ Kicks in 20s gemacht → gebannt")
+            await security_log(guild, f"🪓 {actor} hat 2+ Kicks in 20s gemacht → gebannt")
         except Exception:
             pass
-    else:
-        await send_log(guild, f"⚠️ {actor} hat einen Kick ausgeführt.")
-
-
-@bot.event
-async def on_member_unban(guild, user):
-    if guild.id != ALLOWED_GUILD_ID:
-        return
-    await send_log(guild, f"🔓 {user} wurde entbannt.")
 
 
 @bot.event
@@ -616,7 +834,7 @@ async def on_audit_log_entry_create(entry):
             if len(timeout_tracker[actor.id]) >= 2:
                 try:
                     await entry.guild.ban(actor, reason="Mass Timeout (2+ Timeouts in 15s)")
-                    await send_log(entry.guild, f"⏱️ {actor} hat 2+ Timeouts in 15s vergeben → gebannt")
+                    await security_log(entry.guild, f"⏱️ {actor} hat 2+ Timeouts in 15s vergeben → gebannt")
                 except Exception:
                     pass
 
@@ -624,16 +842,13 @@ async def on_audit_log_entry_create(entry):
         actor = entry.user
         if not actor or actor.id in OWNERS or actor.bot:
             return
-
         role = entry.target
         if not role:
             return
-
         guild = entry.guild
         bot_member = guild.me
         if role.position >= bot_member.top_role.position:
             return
-
         changes = entry.changes
         after_perms = None
         if hasattr(changes, 'after'):
@@ -641,7 +856,6 @@ async def on_audit_log_entry_create(entry):
                 if c.key == "permissions":
                     after_perms = c.new
                     break
-
         if after_perms and after_perms.administrator:
             try:
                 new_perms = discord.Permissions(after_perms.value)
@@ -653,7 +867,7 @@ async def on_audit_log_entry_create(entry):
                 member = guild.get_member(actor.id)
                 if member:
                     await member.kick(reason="Versuch Admin-Permission zu vergeben")
-                    await send_log(guild, f"🛡️ {actor} hat versucht Admin-Rechte zur Rolle {role.name} hinzuzufügen → gekickt & Permission entfernt")
+                    await security_log(guild, f"🛡️ {actor} hat versucht Admin-Rechte zur Rolle **{role.name}** hinzuzufügen → gekickt & Permission entfernt")
             except Exception:
                 pass
 
@@ -678,11 +892,10 @@ async def send_cmd(
     try:
         if embed:
             emb = discord.Embed(description=message, color=get_color(color))
-            await channel.send(embed=emb)
+            await channel.send(emb)
         else:
             await channel.send(message)
         await interaction.response.send_message("✅ Gesendet", ephemeral=True)
-        await send_log(interaction.guild, f"📤 {interaction.user} hat eine Nachricht in {channel.mention} gesendet.")
     except Exception as e:
         await interaction.response.send_message(f"❌ Fehler: {e}", ephemeral=True)
 
@@ -703,7 +916,6 @@ async def call(ctx):
             await vc.move_to(channel)
         else:
             await channel.connect()
-        await send_log(ctx.guild, "📞 Bot im Voice Call")
         await ctx.send("✅ Connected")
     except Exception as e:
         await ctx.send(f"❌ Fehler: {e}")
