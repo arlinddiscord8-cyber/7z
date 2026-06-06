@@ -258,10 +258,15 @@ async def on_member_join(member):
             total = _get_invites(member.guild.id, used_invite.inviter.id)
             invite_ch = member.guild.get_channel(INVITE_CHANNEL_ID)
             if invite_ch:
-                await invite_ch.send(
-                    f"📨 {used_invite.inviter.mention} has invited {member.mention}, "
-                    f"he has now **{total}** invites"
+                embed = discord.Embed(
+                    description=(
+                        f"**{member.mention}** just joined. "
+                        f"They were invited by **{used_invite.inviter.name}** "
+                        f"who now has **{total} invites** !"
+                    ),
+                    color=discord.Color.from_rgb(149, 165, 166)
                 )
+                await invite_ch.send(embed=embed)
     except Exception:
         pass
 
@@ -660,27 +665,41 @@ async def role_cmd(ctx, member: discord.Member = None, *, role_name: str = None)
         await ctx.send(f"❌ Fehler: {e}")
 
 # =============================
-# INVITES COMMAND
+# INVITES SLASH COMMANDS
 # =============================
 
-@bot.command(name="invites")
-async def invites_cmd(ctx, member: discord.Member = None):
-    if ctx.guild.id != ALLOWED_GUILD_ID:
-        return
-    if member:
-        count = _get_invites(ctx.guild.id, member.id)
-        return await ctx.send(f"📨 {member.mention} hat **{count} Invites**")
+@bot.tree.command(
+    name="invite",
+    description="Zeigt die Invite-Anzahl eines Users",
+    guild=discord.Object(id=ALLOWED_GUILD_ID)
+)
+async def invite_cmd(interaction: discord.Interaction, member: discord.Member):
+    count = _get_invites(interaction.guild.id, member.id)
+    embed = discord.Embed(
+        description=f"📨 **{member.name}** hat **{count} Invites**",
+        color=discord.Color.from_rgb(149, 165, 166)
+    )
+    await interaction.response.send_message(embed=embed)
 
-    top = _get_top(ctx.guild.id)
+@bot.tree.command(
+    name="leaderboard",
+    description="Zeigt das Invite-Leaderboard",
+    guild=discord.Object(id=ALLOWED_GUILD_ID)
+)
+async def leaderboard_cmd(interaction: discord.Interaction):
+    top = _get_top(interaction.guild.id)
     if not top:
-        return await ctx.send("Noch keine Invites gespeichert.")
+        return await interaction.response.send_message("Noch keine Invites gespeichert.", ephemeral=True)
 
-    embed = discord.Embed(title="🏆 Invite Leaderboard", color=discord.Color.gold())
+    embed = discord.Embed(
+        title="🏆 Invite Leaderboard",
+        color=discord.Color.from_rgb(149, 165, 166)
+    )
     for i, (user_id, count) in enumerate(top, start=1):
         user = bot.get_user(user_id)
         name = user.name if user else f"User {user_id}"
         embed.add_field(name=f"{i}. {name}", value=f"📨 {count} Invites", inline=False)
-    await ctx.send(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
 # =============================
 # SECURITY SYSTEM
