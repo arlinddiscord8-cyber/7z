@@ -57,6 +57,7 @@ ban_tracker     = defaultdict(list)
 counting_state = {
     "current": 0,
     "last_user": None,
+    "delete_notice": None,
 }
 
 first_react_announced = set()
@@ -274,7 +275,7 @@ async def handle_counting(message):
             note = await message.channel.send(
                 f"❌ {message.author.mention} Du kannst nicht zweimal hintereinander zählen!"
             )
-            await asyncio.sleep(5)
+            await asyncio.sleep(1.5)
             await note.delete()
         except Exception:
             pass
@@ -283,6 +284,12 @@ async def handle_counting(message):
     if value == expected:
         counting_state["current"] = expected
         counting_state["last_user"] = message.author.id
+        if counting_state["delete_notice"] is not None:
+            try:
+                await counting_state["delete_notice"].delete()
+            except Exception:
+                pass
+            counting_state["delete_notice"] = None
         try:
             await message.add_reaction("✔️")
         except Exception:
@@ -292,7 +299,7 @@ async def handle_counting(message):
             note = await message.channel.send(
                 f"❌ Das stimmt nicht! Die nächste Zahl ist **{expected}**."
             )
-            await asyncio.sleep(6)
+            await asyncio.sleep(1.5)
             await note.delete()
         except Exception:
             pass
@@ -302,11 +309,14 @@ async def on_message_delete(message):
     if not message.guild or message.guild.id != ALLOWED_GUILD_ID:
         return
     if COUNTING_CHANNEL_ID != 0 and message.channel.id == COUNTING_CHANNEL_ID:
+        if message.author.bot:
+            return
         next_num = counting_state["current"] + 1
         try:
-            await message.channel.send(
+            notice = await message.channel.send(
                 f"🗑️ Eine Nachricht wurde gelöscht. Die nächste Zahl ist **{next_num}**."
             )
+            counting_state["delete_notice"] = notice
         except Exception:
             pass
 
