@@ -241,6 +241,15 @@ def can_use_role_cmd(member: discord.Member) -> bool:
     return any(r.id == ROLE_CMD_ALLOWED_ROLE_ID for r in member.roles)
 
 def is_whitelisted(member) -> bool:
+    """
+    Returns True if this member should be exempt from auto-security actions.
+    Exempt if:
+      - They are an Owner
+      - They are in the manual whitelist
+      - They have a whitelisted role
+      - Their top role is ABOVE the bot's top role (they are a legitimate admin/mod
+        with higher hierarchy than the bot — the bot can't and shouldn't touch them)
+    """
     if not member:
         return False
     if getattr(member, "id", None) in OWNERS:
@@ -248,7 +257,16 @@ def is_whitelisted(member) -> bool:
     if getattr(member, "id", None) in SECURITY_WHITELIST_USERS:
         return True
     if hasattr(member, "roles"):
-        return any(r.id in SECURITY_WHITELIST_ROLES for r in member.roles)
+        # Manual whitelist role
+        if any(r.id in SECURITY_WHITELIST_ROLES for r in member.roles):
+            return True
+        # Role hierarchy check — if the member's top role is above the bot's
+        # top role they are a legitimate higher-up, don't touch them
+        guild = getattr(member, "guild", None)
+        if guild:
+            bot_member = guild.me
+            if bot_member and member.top_role >= bot_member.top_role:
+                return True
     return False
 
 def is_new_account(user: discord.User, days: int = 7) -> bool:
