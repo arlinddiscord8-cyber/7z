@@ -735,14 +735,7 @@ async def on_message_edit(before: discord.Message, after: discord.Message):
     # Only log if content actually changed and is not empty
     if not before.content and not after.content:
         return
-    await mod_log(after.guild, "Message Edited",
-        f"{after.author.mention} edited a message in {after.channel.mention}",
-        color=discord.Color.blurple(),
-        fields=[
-            ("User",   f"{after.author} ({after.author.id})"),
-            ("Before", before.content[:400] or "*(empty)*"),
-            ("After",  after.content[:400] or "*(empty)*"),
-        ])
+    pass  # message edit not logged
 
 @bot.event
 async def on_message_delete(message: discord.Message):
@@ -771,14 +764,7 @@ async def on_message_delete(message: discord.Message):
     if not message.content:
         return
 
-    await mod_log(message.guild, "Message Deleted",
-        f"A message from {message.author.mention} was deleted.",
-        color=discord.Color.dark_gray(),
-        fields=[
-            ("User",    f"{message.author} ({message.author.id})"),
-            ("Channel", message.channel.mention),
-            ("Content", message.content[:400]),
-        ])
+    pass  # message delete not logged
 
 # ================================================================
 #  COUNTING SYSTEM
@@ -868,25 +854,7 @@ async def on_voice_state_update(
 ):
     if not member.guild or member.guild.id != ALLOWED_GUILD_ID or member.bot:
         return
-    if before.channel is None and after.channel is not None:
-        await mod_log(member.guild, "Voice — Joined",
-            f"{member.mention} joined a voice channel.",
-            color=discord.Color.green(),
-            fields=[("User", f"{member} ({member.id})"), ("Channel", after.channel.name)])
-    elif before.channel is not None and after.channel is None:
-        await mod_log(member.guild, "Voice — Left",
-            f"{member.mention} left a voice channel.",
-            color=discord.Color.dark_green(),
-            fields=[("User", f"{member} ({member.id})"), ("Channel", before.channel.name)])
-    elif before.channel != after.channel:
-        await mod_log(member.guild, "Voice — Moved",
-            f"{member.mention} switched voice channels.",
-            color=discord.Color.blurple(),
-            fields=[
-                ("User", f"{member} ({member.id})"),
-                ("From", before.channel.name),
-                ("To",   after.channel.name),
-            ])
+    pass  # voice state not logged
 
 # ================================================================
 #  TICKET SYSTEM
@@ -1105,10 +1073,7 @@ async def kick(ctx: commands.Context, member: discord.Member = None, *, reason: 
         embed.add_field(name="Mod",    value=str(ctx.author))
         embed.add_field(name="Reason", value=reason)
         await ctx.send(embed=embed)
-        await mod_log(ctx.guild, "Kick",
-            f"{member.mention} was kicked by {ctx.author.mention}.",
-            color=discord.Color.orange(),
-            fields=[("User", f"{member} ({member.id})"), ("Mod", str(ctx.author)), ("Reason", reason)])
+
     except discord.Forbidden:
         await ctx.send("Missing permissions.")
     except Exception as e:
@@ -1134,9 +1099,7 @@ async def ban(ctx: commands.Context, member: discord.Member = None, *, reason: s
         embed.add_field(name="Mod",    value=str(ctx.author))
         embed.add_field(name="Reason", value=reason)
         await ctx.send(embed=embed)
-        await mod_log(ctx.guild, "Ban",
-            f"{member.mention} was banned by {ctx.author.mention}.",
-            fields=[("User", f"{member} ({member.id})"), ("Mod", str(ctx.author)), ("Reason", reason)])
+
     except discord.Forbidden:
         await ctx.send("Missing permissions.")
     except Exception as e:
@@ -1159,10 +1122,7 @@ async def unban(ctx: commands.Context, user_id: str = None, *, reason: str = "No
         embed.add_field(name="Mod",    value=str(ctx.author))
         embed.add_field(name="Reason", value=reason)
         await ctx.send(embed=embed)
-        await mod_log(ctx.guild, "Unban",
-            f"{user.mention} was unbanned by {ctx.author.mention}.",
-            color=discord.Color.green(),
-            fields=[("User", f"{user} ({user.id})"), ("Mod", str(ctx.author)), ("Reason", reason)])
+
     except discord.NotFound:
         await ctx.send("User not found or not banned.")
     except Exception as e:
@@ -1203,15 +1163,7 @@ async def timeout(
         embed.add_field(name="Reason",   value=reason)
         embed.add_field(name="Mod",      value=str(ctx.author))
         await ctx.send(embed=embed)
-        await mod_log(ctx.guild, "Timeout",
-            f"{member.mention} was timed out by {ctx.author.mention}.",
-            color=discord.Color.orange(),
-            fields=[
-                ("User",     f"{member} ({member.id})"),
-                ("Duration", duration),
-                ("Until",    f"<t:{int(until.timestamp())}:F>"),
-                ("Reason",   reason),
-            ])
+
     except discord.Forbidden:
         await ctx.send("Missing permissions.")
     except Exception as e:
@@ -1254,16 +1206,7 @@ async def warn(ctx: commands.Context, member: discord.Member = None, *, reason: 
     except Exception:
         dm_status = "DM failed (blocked)"
 
-    await mod_log(ctx.guild, "Warning",
-        f"{member.mention} was warned by {ctx.author.mention}.",
-        color=discord.Color.yellow(),
-        fields=[
-            ("User",    f"{member} ({member.id})"),
-            ("Reason",  reason),
-            ("Warn ID", f"#{warn_id}"),
-            ("Total",   len(warns)),
-            ("DM",      dm_status),
-        ])
+
 
 
 @bot.command()
@@ -1480,14 +1423,7 @@ async def role_cmd(ctx: commands.Context, member: discord.Member = None, *, role
         embed.set_footer(text=f"By {ctx.author} · {ctx.author.id}")
         await ctx.send(embed=embed)
 
-        await mod_log(ctx.guild, "Role Updated",
-            f"{ctx.author.mention} {action} role **{role.name}** for {member.mention}.",
-            color=discord.Color.blurple(),
-            fields=[
-                ("Mod",  f"{ctx.author} ({ctx.author.id})"),
-                ("User", f"{member} ({member.id})"),
-                ("Role", f"{role.name} ({role.id})"),
-            ])
+
     except discord.Forbidden:
         await ctx.send("Missing permissions for that role.")
     except Exception as e:
@@ -1925,84 +1861,6 @@ async def whitelist_list(interaction: discord.Interaction):
     await interaction.response.send_message("**Whitelist:**\n" + "\n".join(names), ephemeral=True)
 
 # ================================================================
-#  LOCKDOWN
-# ================================================================
-
-@bot.tree.command(
-    name="lockdown",
-    description="Lock or unlock a channel",
-    guild=discord.Object(id=ALLOWED_GUILD_ID)
-)
-async def lockdown(interaction: discord.Interaction, channel: discord.TextChannel = None):
-    if interaction.user.id not in OWNERS:
-        return await interaction.response.send_message("No permission.", ephemeral=True)
-
-    target = channel or interaction.channel
-    await interaction.response.defer(ephemeral=True)
-
-    default_role = interaction.guild.default_role
-
-    # Check current state — look at the explicit overwrite on the channel itself
-    current_overwrite = target.overwrites_for(default_role)
-    is_locked = current_overwrite.send_messages is False
-
-    try:
-        if is_locked:
-            # Unlock — remove the explicit deny so it falls back to category/default
-            await target.set_permissions(
-                default_role,
-                overwrite=discord.PermissionOverwrite(
-                    send_messages=None,
-                    add_reactions=None,
-                    create_public_threads=None,
-                    create_private_threads=None,
-                    send_messages_in_threads=None,
-                )
-            )
-            embed = discord.Embed(
-                description="This channel has been unlocked.",
-                color=discord.Color.green(),
-            )
-            await target.send(embed=embed)
-            await interaction.followup.send(f"{target.mention} unlocked.", ephemeral=True)
-            await mod_log(interaction.guild, "Lockdown Lifted",
-                f"{interaction.user.mention} unlocked {target.mention}.",
-                color=discord.Color.green(),
-                fields=[
-                    ("User",    f"{interaction.user} ({interaction.user.id})"),
-                    ("Channel", target.mention),
-                ])
-        else:
-            # Lock — explicitly deny send_messages for @everyone
-            await target.set_permissions(
-                default_role,
-                overwrite=discord.PermissionOverwrite(
-                    send_messages=False,
-                    add_reactions=False,
-                    create_public_threads=False,
-                    create_private_threads=False,
-                    send_messages_in_threads=False,
-                )
-            )
-            embed = discord.Embed(
-                description="This channel has been temporarily locked.",
-                color=discord.Color.red(),
-            )
-            await target.send(embed=embed)
-            await interaction.followup.send(f"{target.mention} locked.", ephemeral=True)
-            await mod_log(interaction.guild, "Lockdown Active",
-                f"{interaction.user.mention} locked {target.mention}.",
-                color=discord.Color.red(),
-                fields=[
-                    ("User",    f"{interaction.user} ({interaction.user.id})"),
-                    ("Channel", target.mention),
-                ])
-    except discord.Forbidden:
-        await interaction.followup.send("Missing permissions to edit that channel.", ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(f"Error: {e}", ephemeral=True)
-
-# ================================================================
 #  /SEND
 # ================================================================
 
@@ -2057,10 +1915,7 @@ async def help_cmd(ctx: commands.Context):
         "`?clearwarns @user`"
     ), inline=False)
     embed.add_field(name="Roles", value="`?role @user <name or ID>`", inline=False)
-    embed.add_field(name="Tickets", value=(
-        "`?close` — Close ticket\n"
-        "`?delete` — Save transcript & delete"
-    ), inline=False)
+
     embed.add_field(name="Info", value=(
         "`/userinfo [@user]`\n"
         "`/serverinfo`\n"
@@ -2071,11 +1926,22 @@ async def help_cmd(ctx: commands.Context):
         "`/leaderboard`\n"
         "`/invites_set @user <amount>`"
     ), inline=False)
+    embed.add_field(name="Utility", value=(
+        "`?say #channel <text>`\n"
+        "`/reminder <time> <text>` — Units: s m h d\n"
+        "`?alts [days]` — Show new accounts"
+    ), inline=False)
+    embed.add_field(name="Tickets", value=(
+        "`?close` — Close ticket\n"
+        "`?delete` — Save transcript & delete\n"
+        "`?adduser @user` — Add user to ticket\n"
+        "`?removeuser @user` — Remove user from ticket\n"
+        "`?renameticket <name>` — Rename ticket"
+    ), inline=False)
     embed.add_field(name="Owner Only", value=(
         "`?setcount <number>`\n"
         "`?call`\n"
         "`/send`\n"
-        "`/lockdown [#channel]`\n"
         "`/ticketpanel`\n"
         "`/whitelist_add|remove|list`"
     ), inline=False)
@@ -2100,6 +1966,187 @@ async def call(ctx: commands.Context):
         await ctx.send("Connected.", delete_after=3)
     except Exception as e:
         await ctx.send(f"Error: {e}")
+
+
+# ================================================================
+#  ?SAY
+# ================================================================
+
+@bot.command(name="say")
+async def say_cmd(ctx: commands.Context, channel: discord.TextChannel = None, *, text: str = None):
+    if ctx.guild.id != ALLOWED_GUILD_ID:
+        return
+    if not is_owner(ctx.author.id):
+        return await _reply_and_clean(ctx, "No permission.")
+    if channel is None or text is None:
+        return await _reply_and_clean(ctx, "Usage: `?say #channel <text>`")
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    try:
+        await channel.send(text)
+    except discord.Forbidden:
+        await ctx.send("Missing permissions for that channel.", delete_after=4)
+    except Exception as e:
+        await ctx.send(f"Error: {e}", delete_after=4)
+
+# ================================================================
+#  /REMINDER
+# ================================================================
+
+@bot.tree.command(
+    name="reminder",
+    description="Set a reminder",
+    guild=discord.Object(id=ALLOWED_GUILD_ID)
+)
+async def reminder_cmd(interaction: discord.Interaction, time: str, *, text: str):
+    units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    unit  = time[-1].lower()
+    if unit not in units or not time[:-1].isdigit():
+        return await interaction.response.send_message(
+            "Invalid time. Example: `10m`, `2h`, `1d`", ephemeral=True
+        )
+    seconds = int(time[:-1]) * units[unit]
+    if seconds > 604800:
+        return await interaction.response.send_message(
+            "Maximum reminder time is 7 days.", ephemeral=True
+        )
+
+    until_ts = int((datetime.utcnow() + timedelta(seconds=seconds)).timestamp())
+    await interaction.response.send_message(
+        f"Got it. I will remind you <t:{until_ts}:R>.", ephemeral=True
+    )
+
+    await asyncio.sleep(seconds)
+    try:
+        embed = discord.Embed(
+            title="Reminder",
+            description=text,
+            color=discord.Color.from_rgb(149, 165, 166),
+            timestamp=datetime.utcnow(),
+        )
+        embed.set_footer(text=f"Set by {interaction.user}")
+        await interaction.user.send(embed=embed)
+    except Exception:
+        # DMs closed — try channel
+        try:
+            await interaction.channel.send(
+                f"{interaction.user.mention} Reminder: {text}"
+            )
+        except Exception:
+            pass
+
+# ================================================================
+#  ?ALTS
+# ================================================================
+
+@bot.command(name="alts")
+async def alts_cmd(ctx: commands.Context, days: int = 7):
+    if ctx.guild.id != ALLOWED_GUILD_ID:
+        return
+    if not can_moderate(ctx.author):
+        return await _reply_and_clean(ctx, "Insufficient permissions.")
+    if days < 1 or days > 365:
+        return await _reply_and_clean(ctx, "Days must be between 1 and 365.")
+
+    now   = datetime.utcnow()
+    alts  = [
+        m for m in ctx.guild.members
+        if not m.bot and (now - m.created_at.replace(tzinfo=None)) < timedelta(days=days)
+    ]
+
+    if not alts:
+        return await ctx.send(f"No accounts younger than {days} days found.", delete_after=8)
+
+    embed = discord.Embed(
+        title=f"Accounts younger than {days} days",
+        color=discord.Color.orange(),
+        timestamp=datetime.utcnow(),
+    )
+    embed.set_footer(text=f"Found {len(alts)} account(s)")
+
+    lines = []
+    for m in sorted(alts, key=lambda x: x.created_at, reverse=True)[:20]:
+        age_days = (now - m.created_at.replace(tzinfo=None)).days
+        lines.append(f"{m.mention} — created {age_days}d ago (<t:{int(m.created_at.timestamp())}:R>)")
+
+    embed.description = "\n".join(lines)
+    if len(alts) > 20:
+        embed.description += f"\n*...and {len(alts) - 20} more*"
+    await ctx.send(embed=embed)
+
+# ================================================================
+#  TICKET — ADDUSER / REMOVEUSER / RENAME
+# ================================================================
+
+@bot.command(name="adduser")
+async def adduser_cmd(ctx: commands.Context, member: discord.Member = None):
+    if ctx.guild.id != ALLOWED_GUILD_ID or not is_ticket_channel(ctx.channel):
+        return
+    if not can_manage_ticket(ctx.author):
+        return await ctx.send("No permission.", delete_after=4)
+    if member is None:
+        return await ctx.send("Usage: `?adduser @user`", delete_after=4)
+    try:
+        await ctx.channel.set_permissions(
+            member,
+            read_messages=True,
+            send_messages=True,
+        )
+        try:
+            await ctx.message.delete()
+        except Exception:
+            pass
+        await ctx.send(f"{member.mention} has been added to the ticket.", delete_after=5)
+    except discord.Forbidden:
+        await ctx.send("Missing permissions.", delete_after=4)
+    except Exception as e:
+        await ctx.send(f"Error: {e}", delete_after=4)
+
+
+@bot.command(name="removeuser")
+async def removeuser_cmd(ctx: commands.Context, member: discord.Member = None):
+    if ctx.guild.id != ALLOWED_GUILD_ID or not is_ticket_channel(ctx.channel):
+        return
+    if not can_manage_ticket(ctx.author):
+        return await ctx.send("No permission.", delete_after=4)
+    if member is None:
+        return await ctx.send("Usage: `?removeuser @user`", delete_after=4)
+    try:
+        await ctx.channel.set_permissions(member, overwrite=None)
+        try:
+            await ctx.message.delete()
+        except Exception:
+            pass
+        await ctx.send(f"{member.mention} has been removed from the ticket.", delete_after=5)
+    except discord.Forbidden:
+        await ctx.send("Missing permissions.", delete_after=4)
+    except Exception as e:
+        await ctx.send(f"Error: {e}", delete_after=4)
+
+
+@bot.command(name="renameticket")
+async def renameticket_cmd(ctx: commands.Context, *, name: str = None):
+    if ctx.guild.id != ALLOWED_GUILD_ID or not is_ticket_channel(ctx.channel):
+        return
+    if not can_manage_ticket(ctx.author):
+        return await ctx.send("No permission.", delete_after=4)
+    if name is None:
+        return await ctx.send("Usage: `?renameticket <name>`", delete_after=4)
+    # Sanitize name
+    name = name.lower().replace(" ", "-")[:50]
+    try:
+        await ctx.channel.edit(name=f"ticket-{name}")
+        try:
+            await ctx.message.delete()
+        except Exception:
+            pass
+        await ctx.send(f"Ticket renamed to **ticket-{name}**.", delete_after=5)
+    except discord.Forbidden:
+        await ctx.send("Missing permissions.", delete_after=4)
+    except Exception as e:
+        await ctx.send(f"Error: {e}", delete_after=4)
 
 # ================================================================
 #  START
