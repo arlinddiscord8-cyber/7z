@@ -1936,27 +1936,71 @@ async def whitelist_list(interaction: discord.Interaction):
 async def lockdown(interaction: discord.Interaction, channel: discord.TextChannel = None):
     if interaction.user.id not in OWNERS:
         return await interaction.response.send_message("No permission.", ephemeral=True)
-    target    = channel or interaction.channel
-    overwrite = target.overwrites_for(interaction.guild.default_role)
 
-    if overwrite.send_messages is False:
-        overwrite.send_messages = None
-        await target.set_permissions(interaction.guild.default_role, overwrite=overwrite)
-        await interaction.response.send_message(f"{target.mention} unlocked.", ephemeral=True)
-        await target.send("This channel has been unlocked.")
-        await mod_log(interaction.guild, "Lockdown Lifted",
-            f"{interaction.user.mention} unlocked {target.mention}.",
-            color=discord.Color.green(),
-            fields=[("User", f"{interaction.user} ({interaction.user.id})"), ("Channel", target.mention)])
-    else:
-        overwrite.send_messages = False
-        await target.set_permissions(interaction.guild.default_role, overwrite=overwrite)
-        await interaction.response.send_message(f"{target.mention} locked.", ephemeral=True)
-        await target.send("This channel has been temporarily locked.")
-        await mod_log(interaction.guild, "Lockdown Active",
-            f"{interaction.user.mention} locked {target.mention}.",
-            color=discord.Color.red(),
-            fields=[("User", f"{interaction.user} ({interaction.user.id})"), ("Channel", target.mention)])
+    target = channel or interaction.channel
+    await interaction.response.defer(ephemeral=True)
+
+    default_role = interaction.guild.default_role
+
+    # Check current state — look at the explicit overwrite on the channel itself
+    current_overwrite = target.overwrites_for(default_role)
+    is_locked = current_overwrite.send_messages is False
+
+    try:
+        if is_locked:
+            # Unlock — remove the explicit deny so it falls back to category/default
+            await target.set_permissions(
+                default_role,
+                overwrite=discord.PermissionOverwrite(
+                    send_messages=None,
+                    add_reactions=None,
+                    create_public_threads=None,
+                    create_private_threads=None,
+                    send_messages_in_threads=None,
+                )
+            )
+            embed = discord.Embed(
+                description="This channel has been unlocked.",
+                color=discord.Color.green(),
+            )
+            await target.send(embed=embed)
+            await interaction.followup.send(f"{target.mention} unlocked.", ephemeral=True)
+            await mod_log(interaction.guild, "Lockdown Lifted",
+                f"{interaction.user.mention} unlocked {target.mention}.",
+                color=discord.Color.green(),
+                fields=[
+                    ("User",    f"{interaction.user} ({interaction.user.id})"),
+                    ("Channel", target.mention),
+                ])
+        else:
+            # Lock — explicitly deny send_messages for @everyone
+            await target.set_permissions(
+                default_role,
+                overwrite=discord.PermissionOverwrite(
+                    send_messages=False,
+                    add_reactions=False,
+                    create_public_threads=False,
+                    create_private_threads=False,
+                    send_messages_in_threads=False,
+                )
+            )
+            embed = discord.Embed(
+                description="This channel has been temporarily locked.",
+                color=discord.Color.red(),
+            )
+            await target.send(embed=embed)
+            await interaction.followup.send(f"{target.mention} locked.", ephemeral=True)
+            await mod_log(interaction.guild, "Lockdown Active",
+                f"{interaction.user.mention} locked {target.mention}.",
+                color=discord.Color.red(),
+                fields=[
+                    ("User",    f"{interaction.user} ({interaction.user.id})"),
+                    ("Channel", target.mention),
+                ])
+    except discord.Forbidden:
+        await interaction.followup.send("Missing permissions to edit that channel.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"Error: {e}", ephemeral=True)
 
 # ================================================================
 #  /SEND
