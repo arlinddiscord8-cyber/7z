@@ -73,7 +73,13 @@ intents.moderation      = True
 bot = commands.Bot(
     command_prefix=["!", "?"],
     intents=intents,
-    help_command=None
+    help_command=None,
+    allowed_mentions=discord.AllowedMentions(
+        everyone=False,
+        roles=False,
+        users=False,
+        replied_user=False,
+    ),
 )
 
 timeout_tracker        = defaultdict(list)
@@ -212,6 +218,10 @@ def _increment_ticket_counter(guild_id: int) -> int:
     return _get_ticket_counter(guild_id)
 
 invite_cache: dict[int, dict[str, int]] = {}
+# channel_id → (author, content, timestamp)
+snipe_cache:  dict[int, tuple] = {}
+# user_id → (reason, timestamp)
+afk_users:    dict[int, tuple] = {}
 
 # ================================================================
 #  HELPERS
@@ -342,12 +352,30 @@ async def on_ready():
         counting_state["current"]   = current
         counting_state["last_user"] = last_user if last_user else None
 
+    # Cache current Discord invite uses — this is only for delta detection
+    # The actual invite counts are stored in the DB and survive restarts
     for guild in bot.guilds:
         try:
             invites = await guild.invites()
             invite_cache[guild.id] = {inv.code: inv.uses for inv in invites}
         except Exception:
             pass
+
+# ================================================================
+#  INVITE CACHE SYNC  (keeps cache accurate when invites are created/deleted)
+# ================================================================
+
+@bot.event
+async def on_invite_create(invite: discord.Invite):
+    if invite.guild.id != ALLOWED_GUILD_ID:
+        return
+    invite_cache.setdefault(invite.guild.id, {})[invite.code] = invite.uses
+
+@bot.event
+async def on_invite_delete(invite: discord.Invite):
+    if invite.guild.id != ALLOWED_GUILD_ID:
+        return
+    invite_cache.get(invite.guild.id, {}).pop(invite.code, None)
 
 # ================================================================
 #  TRACKER CLEANUP
@@ -473,7 +501,7 @@ async def on_member_join(member: discord.Member):
             embed = discord.Embed(
                 title=member.guild.name,
                 description=(
-                    f"{member.mention} ist beigetreten.\n"
+                    f"**{member.name}** ist beigetreten.\n"
                     f"Eingeladen über **Vanity URL**"
                     + (f" (`/{vanity_code}`)" if vanity_code else "")
                 ),
@@ -487,16 +515,12 @@ async def on_member_join(member: discord.Member):
         elif used_invite.inviter:
             inviter = used_invite.inviter
             _add_invite(member.guild.id, inviter.id, 1)
-            total, left, fake = _get_invites(member.guild.id, inviter.id)
-            real = total - left - fake
 
             embed = discord.Embed(
                 title=member.guild.name,
                 description=(
-                    f"{member.mention} ist beigetreten.\n"
-                    f"Eingeladen von **{inviter.name}** ({inviter.mention}) \u2013 "
-                    f"jetzt **{real} Invites**\n"
-                    f"({total} gesamt \u00b7 {left} left \u00b7 {fake} fake)"
+                    f"**{member.name}** ist beigetreten.\n"
+                    f"Eingeladen von **{inviter.name}**"
                 ),
                 color=discord.Color.from_rgb(149, 165, 166),
                 timestamp=datetime.utcnow(),
@@ -509,7 +533,7 @@ async def on_member_join(member: discord.Member):
             embed = discord.Embed(
                 title=member.guild.name,
                 description=(
-                    f"{member.mention} ist beigetreten.\n"
+                    f"**{member.name}** ist beigetreten.\n"
                     f"Einladender konnte nicht ermittelt werden."
                 ),
                 color=discord.Color.from_rgb(149, 165, 166),
@@ -528,12 +552,12 @@ async def on_member_remove(member: discord.Member):
     if guild.id != ALLOWED_GUILD_ID:
         return
 
-    # Update left-invites tracking
+    # Update left-invites — find which invite they used and increment left counter
     try:
         new_invites = await guild.invites()
         old_cache   = invite_cache.get(guild.id, {})
-        # Find which invite was used when they joined — not always possible,
-        # so we just mark the inviter's count as -1 if detectable
+        # A member leaving doesn't change invite use counts, so we can't detect
+        # which invite they used here. We store who joined via which invite in DB.
         invite_cache[guild.id] = {inv.code: inv.uses for inv in new_invites}
     except Exception:
         pass
@@ -720,6 +744,31 @@ async def on_message(message: discord.Message):
         await handle_counting(message)
         return
 
+    # ── AFK: remove if user sends a message ────────────────
+    if message.author.id in afk_users:
+        reason, _ = afk_users.pop(message.author.id)
+        try:
+            await message.channel.send(
+                f"Welcome back {message.author.mention}, your AFK has been removed.",
+                delete_after=5,
+                allowed_mentions=discord.AllowedMentions(users=True),
+            )
+        except Exception:
+            pass
+
+    # ── AFK: notify if a mentioned user is AFK ──────────────
+    for mentioned in message.mentions:
+        if mentioned.id in afk_users:
+            reason, afk_since = afk_users[mentioned.id]
+            ts = int(afk_since.timestamp())
+            try:
+                await message.channel.send(
+                    f"**{mentioned.name}** is AFK since <t:{ts}:R> — {reason}",
+                    delete_after=8,
+                )
+            except Exception:
+                pass
+
     await bot.process_commands(message)
 
 # ================================================================
@@ -764,7 +813,12 @@ async def on_message_delete(message: discord.Message):
     if not message.content:
         return
 
-    pass  # message delete not logged
+    # Save to snipe cache
+    snipe_cache[message.channel.id] = (
+        message.author,
+        message.content,
+        message.created_at,
+    )
 
 # ================================================================
 #  COUNTING SYSTEM
@@ -1928,7 +1982,9 @@ async def help_cmd(ctx: commands.Context):
     ), inline=False)
     embed.add_field(name="Utility", value=(
         "`/say #channel <text>`\n"
-        "`/alts [days]` — Show new accounts"
+        "`/alts [days]` — Show new accounts\n"
+        "`/snipe` — Last deleted message\n"
+        "`/afk [reason]` — Set AFK status"
     ), inline=False)
     embed.add_field(name="Tickets", value=(
         "`?close` — Close ticket\n"
@@ -2084,6 +2140,47 @@ async def renameticket_cmd(interaction: discord.Interaction, name: str):
         await interaction.response.send_message("Missing permissions.", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"Error: {e}", ephemeral=True)
+
+# ================================================================
+#  /SNIPE
+# ================================================================
+
+@bot.tree.command(
+    name="snipe",
+    description="Show the last deleted message in this channel",
+    guild=discord.Object(id=ALLOWED_GUILD_ID)
+)
+async def snipe_cmd(interaction: discord.Interaction):
+    data = snipe_cache.get(interaction.channel.id)
+    if not data:
+        return await interaction.response.send_message(
+            "Nothing to snipe in this channel.", ephemeral=True
+        )
+    author, content, created_at = data
+    embed = discord.Embed(
+        description=content or "*(no text content)*",
+        color=discord.Color.from_rgb(149, 165, 166),
+        timestamp=created_at,
+    )
+    embed.set_author(name=str(author), icon_url=author.display_avatar.url)
+    embed.set_footer(text=f"Deleted in #{interaction.channel.name}")
+    await interaction.response.send_message(embed=embed)
+
+# ================================================================
+#  /AFK
+# ================================================================
+
+@bot.tree.command(
+    name="afk",
+    description="Set your AFK status",
+    guild=discord.Object(id=ALLOWED_GUILD_ID)
+)
+async def afk_cmd(interaction: discord.Interaction, reason: str = "AFK"):
+    reason = reason[:100]
+    afk_users[interaction.user.id] = (reason, datetime.utcnow())
+    await interaction.response.send_message(
+        f"You are now AFK: **{reason}**", ephemeral=True
+    )
 
 # ================================================================
 #  START
