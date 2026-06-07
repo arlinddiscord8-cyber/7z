@@ -88,6 +88,7 @@ ban_tracker            = defaultdict(list)
 ticket_del_tracker     = defaultdict(list)
 spam_tracker           = defaultdict(list)
 mention_tracker        = defaultdict(list)
+invite_link_tracker    = defaultdict(list)
 channel_create_tracker = defaultdict(list)
 role_create_tracker    = defaultdict(list)
 
@@ -98,7 +99,14 @@ first_react_announced: set[int] = set()
 #  DATABASE
 # ================================================================
 
-_db  = sqlite3.connect("bot.db", check_same_thread=False)
+# Railway persistent volume mounts at /data — use it if available
+# Go to Railway → your service → Volumes → Add Volume → mount path: /data
+import pathlib
+_DB_PATH = "/data/bot.db" if pathlib.Path("/data").exists() else "bot.db"
+if not pathlib.Path("/data").exists():
+    print("WARNING: /data volume not found — DB will reset on restart!")
+    print("Fix: Railway → Service → Volumes → Add Volume → Mount Path: /data")
+_db  = sqlite3.connect(_DB_PATH, check_same_thread=False)
 _cur = _db.cursor()
 
 _cur.executescript("""
@@ -410,6 +418,7 @@ async def cleanup_trackers():
             (ban_tracker,            20),
             (spam_tracker,           SPAM_INTERVAL),
             (mention_tracker,        10),
+            (invite_link_tracker,    30),
             (channel_create_tracker, CREATE_INTERVAL),
             (role_create_tracker,    CREATE_INTERVAL),
         ]:
@@ -504,7 +513,7 @@ async def on_member_join(member: discord.Member):
 
         invite_ch = member.guild.get_channel(INVITE_CHANNEL_ID)
         if not invite_ch:
-            return
+            pass  # no invite channel configured, skip logging
 
         # Vanity URL join — no normal invite matched
         if used_invite is None:
@@ -734,19 +743,53 @@ async def on_message(message: discord.Message):
         if INVITE_PATTERN.search(message.content):
             try:
                 await message.delete()
-                await message.channel.send(
-                    f"{message.author.mention} Discord invites are not allowed here.",
-                    delete_after=5,
-                )
-                await mod_log(guild, "Invite Link Blocked",
-                    f"{message.author.mention} posted an invite link.",
-                    color=discord.Color.orange(),
-                    fields=[
-                        ("User",    f"{message.author} ({message.author.id})"),
-                        ("Channel", message.channel.mention),
-                    ])
             except Exception:
                 pass
+
+            now = datetime.utcnow()
+            invite_link_tracker[message.author.id].append(now)
+            invite_link_tracker[message.author.id] = [
+                t for t in invite_link_tracker[message.author.id]
+                if now - t < timedelta(seconds=30)
+            ]
+            count = len(invite_link_tracker[message.author.id])
+
+            if count >= 2:
+                # Repeated invite spam → timeout
+                try:
+                    until = discord.utils.utcnow() + timedelta(seconds=SPAM_TIMEOUT_SECS)
+                    await message.author.timeout(until, reason="Auto-Timeout: Invite Link Spam")
+                    await message.channel.send(
+                        f"{message.author.mention} has been timed out for posting invite links.",
+                        delete_after=5,
+                    )
+                    invite_link_tracker[message.author.id].clear()
+                    await mod_log(guild, "Invite Spam — Timeout",
+                        f"{message.author.mention} repeatedly posted invite links.",
+                        color=discord.Color.red(),
+                        fields=[
+                            ("User",    f"{message.author} ({message.author.id})"),
+                            ("Channel", message.channel.mention),
+                            ("Count",   count),
+                        ])
+                except Exception:
+                    pass
+            else:
+                # First offence — just delete and warn
+                try:
+                    await message.channel.send(
+                        f"{message.author.mention} Discord invites are not allowed here.",
+                        delete_after=5,
+                    )
+                    await mod_log(guild, "Invite Link Blocked",
+                        f"{message.author.mention} posted an invite link.",
+                        color=discord.Color.orange(),
+                        fields=[
+                            ("User",    f"{message.author} ({message.author.id})"),
+                            ("Channel", message.channel.mention),
+                        ])
+                except Exception:
+                    pass
             return
 
     # ── auto-react ───────────────────────────────────────────
