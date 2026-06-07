@@ -7,12 +7,13 @@ from datetime import datetime, timedelta
 import asyncio
 import os
 import re
+import io
 
 TOKEN = os.getenv("TOKEN")
 
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 #  CONFIG
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 
 ALLOWED_GUILD_ID = 1512581389726388314
 
@@ -21,74 +22,77 @@ OWNERS = {
     1235586743991009372,
 }
 
-CALL_VOICE_CHANNEL_ID    = 1512776116438306816
-LOG_CHANNEL_ID           = 1512582270106468385
-WELCOME_CHANNEL_ID       = 1512774925126078566
-RULES_CHANNEL_ID         = 1512774929253273821
-TICKET_PANEL_CHANNEL_ID  = 1512774944818462741
-TICKET_CATEGORY_ID       = 1512774917479993515
-SUPPORT_ROLE_ID          = 1512774845287497819
-BOOST_CHANNEL_ID         = 1512774965030682665
-AUTO_REACT_CHANNEL_IDS   = {1512774973607907369, 1512774955413147648}
-COUNTING_CHANNEL_ID      = 1512774971712209097
-AUTO_ROLE_ID             = 1512774841005244426
-TRIGGER_ROLE_ID          = 1512774837708525658
-EXTRA_ROLE_ID_1          = 1512774836806619239
-EXTRA_ROLE_ID_2          = 1512775255070867456
-INVITE_CHANNEL_ID        = 1512774942184177765
+CALL_VOICE_CHANNEL_ID   = 1512776116438306816
+LOG_CHANNEL_ID          = 1512582270106468385
+WELCOME_CHANNEL_ID      = 1512774925126078566
+RULES_CHANNEL_ID        = 1512774929253273821
+TICKET_PANEL_CHANNEL_ID = 1512774944818462741
+TICKET_CATEGORY_ID      = 1512774917479993515
+SUPPORT_ROLE_ID         = 1512774845287497819
+BOOST_CHANNEL_ID        = 1512774965030682665
+AUTO_REACT_CHANNEL_IDS  = {1512774973607907369, 1512774955413147648}
+COUNTING_CHANNEL_ID     = 1512774971712209097
+AUTO_ROLE_ID            = 1512774841005244426
+TRIGGER_ROLE_ID         = 1512774837708525658
+EXTRA_ROLE_ID_1         = 1512774836806619239
+EXTRA_ROLE_ID_2         = 1512775255070867456
+INVITE_CHANNEL_ID       = 1512774942184177765
 ROLE_CMD_ALLOWED_ROLE_ID = 1512774843047870564
 
 VOICE_ALWAYS_ON = True
 
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 #  SECURITY CONFIG
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 
 SPAM_MAX_MESSAGES = 5
-SPAM_INTERVAL     = 3      # seconds
-SPAM_TIMEOUT_SECS = 300    # 5 min timeout
-MENTION_MAX       = 4
+SPAM_INTERVAL     = 3
+SPAM_TIMEOUT_SECS = 300
+MENTION_MAX       = 3        # lowered from 4
 CREATE_MAX        = 3
-CREATE_INTERVAL   = 15     # seconds
+CREATE_INTERVAL   = 15
 
 INVITE_PATTERN = re.compile(r"(discord\.gg|discord\.com/invite)/\S+", re.IGNORECASE)
 
 SECURITY_WHITELIST_USERS: set[int] = set()
 SECURITY_WHITELIST_ROLES: set[int] = set()
 
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 #  BOT SETUP
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 
 intents = discord.Intents.default()
-intents.members        = True
-intents.guilds         = True
+intents.members         = True
+intents.guilds          = True
 intents.message_content = True
-intents.reactions      = True
-intents.voice_states   = True
-intents.guild_messages = True
-intents.moderation     = True
+intents.reactions       = True
+intents.voice_states    = True
+intents.guild_messages  = True
+intents.moderation      = True
 
-bot = commands.Bot(command_prefix=["!", "?"], intents=intents, help_command=None)
+bot = commands.Bot(
+    command_prefix=["!", "?"],
+    intents=intents,
+    help_command=None
+)
 
-# trackers
 timeout_tracker        = defaultdict(list)
 kick_tracker           = defaultdict(list)
 ban_tracker            = defaultdict(list)
 ticket_del_tracker     = defaultdict(list)
 spam_tracker           = defaultdict(list)
+mention_tracker        = defaultdict(list)
 channel_create_tracker = defaultdict(list)
 role_create_tracker    = defaultdict(list)
 
 counting_state = {"current": 0, "last_user": None, "delete_notice": None}
 first_react_announced: set[int] = set()
-ticket_counter = 0
 
-# ═══════════════════════════════════════════════════════════
-#  DATABASE  (invites + warns + counting persistence)
-# ═══════════════════════════════════════════════════════════
+# ================================================================
+#  DATABASE
+# ================================================================
 
-_db  = sqlite3.connect("bot.db")
+_db  = sqlite3.connect("bot.db", check_same_thread=False)
 _cur = _db.cursor()
 
 _cur.executescript("""
@@ -96,6 +100,8 @@ CREATE TABLE IF NOT EXISTS invites (
     guild_id INTEGER,
     user_id  INTEGER,
     invites  INTEGER DEFAULT 0,
+    left_invites INTEGER DEFAULT 0,
+    fake_invites INTEGER DEFAULT 0,
     PRIMARY KEY (guild_id, user_id)
 );
 CREATE TABLE IF NOT EXISTS warns (
@@ -111,10 +117,14 @@ CREATE TABLE IF NOT EXISTS counting (
     current   INTEGER DEFAULT 0,
     last_user INTEGER DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS ticket_counter (
+    guild_id INTEGER PRIMARY KEY,
+    counter  INTEGER DEFAULT 0
+);
 """)
 _db.commit()
 
-# ── invite helpers ───────────────────────────────────────
+# ── invite helpers ──────────────────────────────────────────────
 
 def _add_invite(guild_id: int, user_id: int, amount: int = 1):
     _cur.execute("""
@@ -123,10 +133,13 @@ def _add_invite(guild_id: int, user_id: int, amount: int = 1):
     """, (guild_id, user_id, amount, amount))
     _db.commit()
 
-def _get_invites(guild_id: int, user_id: int) -> int:
-    _cur.execute("SELECT invites FROM invites WHERE guild_id=? AND user_id=?", (guild_id, user_id))
+def _get_invites(guild_id: int, user_id: int) -> tuple:
+    _cur.execute(
+        "SELECT invites, left_invites, fake_invites FROM invites WHERE guild_id=? AND user_id=?",
+        (guild_id, user_id)
+    )
     row = _cur.fetchone()
-    return row[0] if row else 0
+    return row if row else (0, 0, 0)
 
 def _set_invites(guild_id: int, user_id: int, amount: int):
     _cur.execute("""
@@ -136,10 +149,13 @@ def _set_invites(guild_id: int, user_id: int, amount: int):
     _db.commit()
 
 def _get_top(guild_id: int, limit: int = 10):
-    _cur.execute("SELECT user_id, invites FROM invites WHERE guild_id=? ORDER BY invites DESC LIMIT ?", (guild_id, limit))
+    _cur.execute(
+        "SELECT user_id, invites, left_invites, fake_invites FROM invites WHERE guild_id=? ORDER BY invites DESC LIMIT ?",
+        (guild_id, limit)
+    )
     return _cur.fetchall()
 
-# ── warn helpers ─────────────────────────────────────────
+# ── warn helpers ────────────────────────────────────────────────
 
 def _add_warn(guild_id: int, user_id: int, mod_id: int, reason: str) -> int:
     _cur.execute(
@@ -150,7 +166,10 @@ def _add_warn(guild_id: int, user_id: int, mod_id: int, reason: str) -> int:
     return _cur.lastrowid
 
 def _get_warns(guild_id: int, user_id: int):
-    _cur.execute("SELECT id,mod_id,reason,timestamp FROM warns WHERE guild_id=? AND user_id=? ORDER BY id", (guild_id, user_id))
+    _cur.execute(
+        "SELECT id,mod_id,reason,timestamp FROM warns WHERE guild_id=? AND user_id=? ORDER BY id",
+        (guild_id, user_id)
+    )
     return _cur.fetchall()
 
 def _del_warn(warn_id: int, guild_id: int) -> bool:
@@ -163,7 +182,7 @@ def _clear_warns(guild_id: int, user_id: int) -> int:
     _db.commit()
     return _cur.rowcount
 
-# ── counting persistence ─────────────────────────────────
+# ── counting persistence ────────────────────────────────────────
 
 def _save_count(guild_id: int, current: int, last_user: int):
     _cur.execute("""
@@ -177,11 +196,26 @@ def _load_count(guild_id: int):
     row = _cur.fetchone()
     return (row[0], row[1]) if row else (0, 0)
 
+# ── ticket counter persistence ──────────────────────────────────
+
+def _get_ticket_counter(guild_id: int) -> int:
+    _cur.execute("SELECT counter FROM ticket_counter WHERE guild_id=?", (guild_id,))
+    row = _cur.fetchone()
+    return row[0] if row else 0
+
+def _increment_ticket_counter(guild_id: int) -> int:
+    _cur.execute("""
+        INSERT INTO ticket_counter (guild_id, counter) VALUES (?,1)
+        ON CONFLICT(guild_id) DO UPDATE SET counter = counter + 1
+    """, (guild_id,))
+    _db.commit()
+    return _get_ticket_counter(guild_id)
+
 invite_cache: dict[int, dict[str, int]] = {}
 
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 #  HELPERS
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 
 def is_owner(user_id: int) -> bool:
     return user_id in OWNERS
@@ -214,49 +248,66 @@ def get_color(color: str) -> discord.Color:
     return discord.Color.from_rgb(255, 255, 255) if color == "white" else discord.Color.from_rgb(0, 0, 0)
 
 def eval_math_expression(expr: str):
+    """Safe math evaluation without eval()."""
+    import operator, re as _re
+    expr = expr.strip()
+    # Only allow digits, operators, parentheses, spaces, decimals
+    if not _re.fullmatch(r"[\d\s\+\-\*\/\(\)\.]+", expr):
+        return None
+    # Tokenise and evaluate safely using a recursive parser
     try:
-        expr = expr.strip()
-        if not all(c in "0123456789+-*/(). " for c in expr):
-            return None
-        result = eval(expr, {"__builtins__": {}}, {})
+        import ast
+        tree = ast.parse(expr, mode="eval")
+        allowed = (ast.Expression, ast.BinOp, ast.UnaryOp, ast.Num,
+                   ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv,
+                   ast.Mod, ast.Pow, ast.UAdd, ast.USub, ast.Constant)
+        for node in ast.walk(tree):
+            if not isinstance(node, allowed):
+                return None
+        result = eval(compile(tree, "<math>", "eval"), {"__builtins__": {}}, {})
         if isinstance(result, (int, float)) and not isinstance(result, bool):
             return int(result) if result == int(result) else None
+    except Exception:
+        return None
+    return None
+
+async def get_latest_audit(guild: discord.Guild, action, target_id: int = None):
+    try:
+        async for entry in guild.audit_logs(limit=5, action=action):
+            if target_id is None or (entry.target and entry.target.id == target_id):
+                return entry
     except Exception:
         pass
     return None
 
-async def get_latest_audit(guild: discord.Guild, action):
-    try:
-        return await guild.audit_logs(limit=1, action=action).__anext__()
-    except Exception:
-        return None
+# ── Log helpers ─────────────────────────────────────────────────
 
-async def security_log(
+async def mod_log(
     guild: discord.Guild,
-    title: str,
+    action: str,
     description: str,
-    color: discord.Color = discord.Color.red(),
+    color: discord.Color = discord.Color.from_rgb(30, 30, 30),
     fields: list | None = None,
 ):
+    """Only sends logs that are relevant for moderation."""
     channel = guild.get_channel(LOG_CHANNEL_ID)
     if not channel:
         return
     embed = discord.Embed(
-        title=f"🔒 {title}",
+        title=action,
         description=description,
         color=color,
         timestamp=datetime.utcnow(),
     )
     for name, value in (fields or []):
         embed.add_field(name=name, value=str(value)[:1024], inline=True)
-    embed.set_footer(text="Security System")
+    embed.set_footer(text="7z Security")
     try:
         await channel.send(embed=embed)
     except Exception:
         pass
 
 async def _reply_and_clean(ctx, text: str, delay: float = 4.0):
-    """Sends a temporary reply that deletes itself and the command."""
     msg = await ctx.send(text)
     await asyncio.sleep(delay)
     for m in (ctx.message, msg):
@@ -265,18 +316,19 @@ async def _reply_and_clean(ctx, text: str, delay: float = 4.0):
         except Exception:
             pass
 
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 #  READY
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 
 async def setup_hook():
     bot.add_view(TicketButton())
+    bot.add_view(TicketCloseView())
 
 bot.setup_hook = setup_hook
 
 @bot.event
 async def on_ready():
-    print(f"✅ Online als {bot.user}")
+    print(f"Online: {bot.user}")
     try:
         await bot.tree.sync(guild=discord.Object(id=ALLOWED_GUILD_ID))
     except Exception:
@@ -285,13 +337,11 @@ async def on_ready():
     asyncio.create_task(voice_keep_alive())
     asyncio.create_task(cleanup_trackers())
 
-    # load counting state from db
     for guild in bot.guilds:
         current, last_user = _load_count(guild.id)
         counting_state["current"]   = current
         counting_state["last_user"] = last_user if last_user else None
 
-    # cache invites
     for guild in bot.guilds:
         try:
             invites = await guild.invites()
@@ -299,20 +349,21 @@ async def on_ready():
         except Exception:
             pass
 
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 #  TRACKER CLEANUP
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 
 async def cleanup_trackers():
     await bot.wait_until_ready()
     while True:
-        await asyncio.sleep(60)
+        await asyncio.sleep(10)
         now = datetime.utcnow()
         for tracker, window in [
             (timeout_tracker,        15),
             (kick_tracker,           20),
             (ban_tracker,            20),
             (spam_tracker,           SPAM_INTERVAL),
+            (mention_tracker,        10),
             (channel_create_tracker, CREATE_INTERVAL),
             (role_create_tracker,    CREATE_INTERVAL),
         ]:
@@ -321,9 +372,9 @@ async def cleanup_trackers():
             for uid in dead:
                 del tracker[uid]
 
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 #  VOICE KEEP-ALIVE
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 
 async def voice_keep_alive():
     await bot.wait_until_ready()
@@ -350,37 +401,34 @@ async def voice_keep_alive():
             pass
         await asyncio.sleep(20)
 
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 #  WELCOME / AUTO-ROLE
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 
 @bot.event
 async def on_member_join(member: discord.Member):
     if member.guild.id != ALLOWED_GUILD_ID:
         return
 
-    # new account warning
     if is_new_account(member, days=7):
-        await security_log(
+        await mod_log(
             member.guild,
-            "⚠️ Neuer Account beigetreten",
-            f"{member.mention} hat einen Account der jünger als 7 Tage ist.",
+            "New Account Warning",
+            f"{member.mention} joined with an account younger than 7 days.",
             color=discord.Color.orange(),
             fields=[
-                ("User",             f"{member} ({member.id})"),
-                ("Account erstellt", f"<t:{int(member.created_at.timestamp())}:R>"),
+                ("User",    f"{member} ({member.id})"),
+                ("Created", f"<t:{int(member.created_at.timestamp())}:R>"),
             ],
         )
 
-    # auto role
     role = member.guild.get_role(AUTO_ROLE_ID)
     if role:
         try:
-            await member.add_roles(role, reason="Auto-Rolle")
+            await member.add_roles(role, reason="Auto Role")
         except Exception:
             pass
 
-    # welcome embed
     welcome_channel = member.guild.get_channel(WELCOME_CHANNEL_ID)
     if welcome_channel:
         try:
@@ -409,25 +457,70 @@ async def on_member_join(member: discord.Member):
         invite_cache[member.guild.id] = {inv.code: inv.uses for inv in new_invites}
 
         if used_invite and used_invite.inviter:
-            _add_invite(member.guild.id, used_invite.inviter.id, 1)
-            total      = _get_invites(member.guild.id, used_invite.inviter.id)
-            invite_ch  = member.guild.get_channel(INVITE_CHANNEL_ID)
+            inviter = used_invite.inviter
+            _add_invite(member.guild.id, inviter.id, 1)
+            total, left, fake = _get_invites(member.guild.id, inviter.id)
+            real = total - left - fake
+
+            invite_ch = member.guild.get_channel(INVITE_CHANNEL_ID)
             if invite_ch:
                 embed = discord.Embed(
+                    title=member.guild.name,
                     description=(
-                        f"**{member.mention}** ist beigetreten. "
-                        f"Eingeladen von **{used_invite.inviter.name}** – "
-                        f"jetzt **{total} Invites**!"
+                        f"{member.mention} ist beigetreten. "
+                        f"Eingeladen von **{inviter.mention}** – "
+                        f"jetzt **{real} Invites**!\n"
+                        f"({total} gesamt · {left} left · {fake} fake)"
                     ),
                     color=discord.Color.from_rgb(149, 165, 166),
+                    timestamp=datetime.utcnow(),
                 )
+                embed.set_thumbnail(url=member.display_avatar.url)
+                embed.set_footer(text=f"Invite code: {used_invite.code}")
                 await invite_ch.send(embed=embed)
     except Exception:
         pass
 
-# ═══════════════════════════════════════════════════════════
+@bot.event
+async def on_member_remove(member: discord.Member):
+    guild = member.guild
+    if guild.id != ALLOWED_GUILD_ID:
+        return
+
+    # Update left-invites tracking
+    try:
+        new_invites = await guild.invites()
+        old_cache   = invite_cache.get(guild.id, {})
+        # Find which invite was used when they joined — not always possible,
+        # so we just mark the inviter's count as -1 if detectable
+        invite_cache[guild.id] = {inv.code: inv.uses for inv in new_invites}
+    except Exception:
+        pass
+
+    # Mass kick detection
+    await asyncio.sleep(0.3)
+    entry = await get_latest_audit(guild, discord.AuditLogAction.kick, member.id)
+    if not entry or entry.target.id != member.id:
+        return
+    actor = entry.user
+    if not actor or is_whitelisted(guild.get_member(actor.id) or actor):
+        return
+
+    now = datetime.utcnow()
+    kick_tracker[actor.id] = [t for t in kick_tracker[actor.id] if now - t < timedelta(seconds=20)]
+    kick_tracker[actor.id].append(now)
+    if len(kick_tracker[actor.id]) >= 2:
+        try:
+            await guild.ban(actor, reason="Mass Kick detected (2+ in 20s)")
+            await mod_log(guild, "Mass Kick — Auto Ban",
+                f"{actor.mention} kicked 2+ members in 20 seconds.",
+                fields=[("User", f"{actor} ({actor.id})"), ("Count", len(kick_tracker[actor.id]))])
+        except Exception:
+            pass
+
+# ================================================================
 #  BOOST / ROLE-TRIGGER
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 
 @bot.event
 async def on_member_update(before: discord.Member, after: discord.Member):
@@ -438,7 +531,7 @@ async def on_member_update(before: discord.Member, after: discord.Member):
         ch = after.guild.get_channel(BOOST_CHANNEL_ID)
         if ch:
             try:
-                await ch.send("danke 🫶🏻!")
+                await ch.send("thank you 🖤")
             except Exception:
                 pass
 
@@ -449,13 +542,13 @@ async def on_member_update(before: discord.Member, after: discord.Member):
             extra = after.guild.get_role(extra_id)
             if extra:
                 try:
-                    await after.add_roles(extra, reason="Trigger-Rolle")
+                    await after.add_roles(extra, reason="Trigger Role")
                 except Exception:
                     pass
 
-# ═══════════════════════════════════════════════════════════
-#  MESSAGES  (anti-spam + auto-react + counting)
-# ═══════════════════════════════════════════════════════════
+# ================================================================
+#  MESSAGES — Anti-Spam + Anti-MassMention + Auto-React + Counting
+# ================================================================
 
 @bot.event
 async def on_message(message: discord.Message):
@@ -468,11 +561,10 @@ async def on_message(message: discord.Message):
         await bot.process_commands(message)
         return
 
-    # ── anti-spam ────────────────────────────────────────
     if not is_whitelisted(message.author):
         now = datetime.utcnow()
 
-        # message spam
+        # ── message spam ────────────────────────────────────
         spam_tracker[message.author.id].append(now)
         spam_tracker[message.author.id] = [
             t for t in spam_tracker[message.author.id]
@@ -481,59 +573,100 @@ async def on_message(message: discord.Message):
         if len(spam_tracker[message.author.id]) >= SPAM_MAX_MESSAGES:
             try:
                 until = discord.utils.utcnow() + timedelta(seconds=SPAM_TIMEOUT_SECS)
-                await message.author.timeout(until, reason="Auto-Timeout: Spam")
+                await message.author.timeout(until, reason="Auto-Timeout: Message Spam")
+                # Delete recent spam messages
+                def is_spam(m):
+                    return m.author.id == message.author.id
+                try:
+                    await message.channel.purge(limit=20, check=is_spam, bulk=True)
+                except Exception:
+                    pass
                 await message.channel.send(
-                    f"⏱️ {message.author.mention} wurde für 5 Minuten getimeoutet (Spam).",
+                    f"{message.author.mention} has been timed out for 5 minutes (spam).",
                     delete_after=5,
                 )
                 spam_tracker[message.author.id].clear()
-                await security_log(guild, "Anti-Spam: Timeout",
-                    f"{message.author.mention} wurde automatisch getimeoutet.",
+                await mod_log(guild, "Anti-Spam — Timeout",
+                    f"{message.author.mention} was automatically timed out for spam.",
                     color=discord.Color.orange(),
-                    fields=[("User", f"{message.author} ({message.author.id})"),
-                            ("Kanal", message.channel.mention), ("Dauer", "5 Minuten")])
+                    fields=[
+                        ("User",     f"{message.author} ({message.author.id})"),
+                        ("Channel",  message.channel.mention),
+                        ("Duration", "5 minutes"),
+                    ])
             except Exception:
                 pass
             return
 
-        # mention spam
-        total_mentions = len(message.mentions) + len(message.role_mentions)
+        # ── everyone / here ping spam ────────────────────────
+        # Allow normal use — only block rapid repeated attempts
+        if "@everyone" in message.content or "@here" in message.content:
+            mention_tracker[message.author.id].append(now)
+            mention_tracker[message.author.id] = [
+                t for t in mention_tracker[message.author.id]
+                if now - t < timedelta(seconds=10)
+            ]
+            if len(mention_tracker[message.author.id]) >= 2:
+                try:
+                    await message.delete()
+                    until = discord.utils.utcnow() + timedelta(seconds=SPAM_TIMEOUT_SECS)
+                    await message.author.timeout(until, reason="Mass ping spam")
+                    await message.channel.send(
+                        f"{message.author.mention} has been timed out for mass ping spam.",
+                        delete_after=5,
+                    )
+                    mention_tracker[message.author.id].clear()
+                    await mod_log(guild, "Mass Ping Spam — Timeout",
+                        f"{message.author.mention} spammed mass pings.",
+                        color=discord.Color.red(),
+                        fields=[("User", f"{message.author} ({message.author.id})")])
+                except Exception:
+                    pass
+                return
+
+        # ── user mention spam ────────────────────────────────
+        total_mentions = len(set(u.id for u in message.mentions)) + len(message.role_mentions)
         if total_mentions >= MENTION_MAX:
             try:
                 await message.delete()
                 until = discord.utils.utcnow() + timedelta(seconds=SPAM_TIMEOUT_SECS)
-                await message.author.timeout(until, reason="Auto-Timeout: Mention-Spam")
+                await message.author.timeout(until, reason="Auto-Timeout: Mention Spam")
                 await message.channel.send(
-                    f"🚫 {message.author.mention} wurde für 5 Minuten getimeoutet (Mention-Spam).",
+                    f"{message.author.mention} has been timed out for mass mentions.",
                     delete_after=5,
                 )
-                await security_log(guild, "Anti-Spam: Mention-Spam",
-                    f"{message.author.mention} hat {total_mentions} Mentions gesendet.",
+                await mod_log(guild, "Mention Spam — Timeout",
+                    f"{message.author.mention} sent {total_mentions} mentions in one message.",
                     color=discord.Color.orange(),
-                    fields=[("User", f"{message.author} ({message.author.id})"),
-                            ("Kanal", message.channel.mention), ("Mentions", total_mentions)])
+                    fields=[
+                        ("User",     f"{message.author} ({message.author.id})"),
+                        ("Channel",  message.channel.mention),
+                        ("Mentions", total_mentions),
+                    ])
             except Exception:
                 pass
             return
 
-        # invite filter
+        # ── invite filter ────────────────────────────────────
         if INVITE_PATTERN.search(message.content):
             try:
                 await message.delete()
                 await message.channel.send(
-                    f"🔗 {message.author.mention} Discord-Einladungen sind hier nicht erlaubt!",
+                    f"{message.author.mention} Discord invites are not allowed here.",
                     delete_after=5,
                 )
-                await security_log(guild, "Invite-Link geblockt",
-                    f"{message.author.mention} hat einen Invite-Link gesendet.",
+                await mod_log(guild, "Invite Link Blocked",
+                    f"{message.author.mention} posted an invite link.",
                     color=discord.Color.orange(),
-                    fields=[("User", f"{message.author} ({message.author.id})"),
-                            ("Kanal", message.channel.mention)])
+                    fields=[
+                        ("User",    f"{message.author} ({message.author.id})"),
+                        ("Channel", message.channel.mention),
+                    ])
             except Exception:
                 pass
             return
 
-    # ── auto-react ────────────────────────────────────────
+    # ── auto-react ───────────────────────────────────────────
     if message.channel.id in AUTO_REACT_CHANNEL_IDS:
         emoji = "✅" if message.channel.id == 1512774955413147648 else "✔️"
         try:
@@ -541,16 +674,16 @@ async def on_message(message: discord.Message):
         except Exception:
             pass
 
-    # ── counting ──────────────────────────────────────────
+    # ── counting ─────────────────────────────────────────────
     if COUNTING_CHANNEL_ID and message.channel.id == COUNTING_CHANNEL_ID:
         await handle_counting(message)
         return
 
     await bot.process_commands(message)
 
-# ═══════════════════════════════════════════════════════════
-#  MESSAGE EDIT / DELETE LOGS
-# ═══════════════════════════════════════════════════════════
+# ================================================================
+#  MESSAGE EDIT / DELETE LOGS  (only relevant, no noise)
+# ================================================================
 
 @bot.event
 async def on_message_edit(before: discord.Message, after: discord.Message):
@@ -558,14 +691,16 @@ async def on_message_edit(before: discord.Message, after: discord.Message):
         return
     if after.author.bot or before.content == after.content:
         return
-    await security_log(after.guild, "Nachricht bearbeitet",
-        f"{after.author.mention} hat eine Nachricht bearbeitet.",
+    # Only log if content actually changed and is not empty
+    if not before.content and not after.content:
+        return
+    await mod_log(after.guild, "Message Edited",
+        f"{after.author.mention} edited a message in {after.channel.mention}",
         color=discord.Color.blurple(),
         fields=[
-            ("User",    f"{after.author} ({after.author.id})"),
-            ("Kanal",   after.channel.mention),
-            ("Vorher",  before.content[:300] or "*(leer)*"),
-            ("Nachher", after.content[:300] or "*(leer)*"),
+            ("User",   f"{after.author} ({after.author.id})"),
+            ("Before", before.content[:400] or "*(empty)*"),
+            ("After",  after.content[:400] or "*(empty)*"),
         ])
 
 @bot.event
@@ -573,35 +708,40 @@ async def on_message_delete(message: discord.Message):
     if not message.guild or message.guild.id != ALLOWED_GUILD_ID:
         return
 
-    # counting notice
+    # counting delete notice
     if COUNTING_CHANNEL_ID and message.channel.id == COUNTING_CHANNEL_ID:
         if message.author.bot:
             return
         next_num = counting_state["current"] + 1
         try:
             notice = await message.channel.send(
-                f"🗑️ Eine Nachricht wurde gelöscht. Die nächste Zahl ist **{next_num}**."
+                f"A message was deleted. Next number is **{next_num}**."
             )
             counting_state["delete_notice"] = notice
         except Exception:
             pass
         return
 
+    # Don't log bot message deletions
     if message.author.bot:
         return
 
-    await security_log(message.guild, "Nachricht gelöscht",
-        f"Eine Nachricht von {message.author.mention} wurde gelöscht.",
+    # Don't log empty messages (embeds only etc)
+    if not message.content:
+        return
+
+    await mod_log(message.guild, "Message Deleted",
+        f"A message from {message.author.mention} was deleted.",
         color=discord.Color.dark_gray(),
         fields=[
-            ("User",   f"{message.author} ({message.author.id})"),
-            ("Kanal",  message.channel.mention),
-            ("Inhalt", message.content[:400] or "*(kein Text / Anhang)*"),
+            ("User",    f"{message.author} ({message.author.id})"),
+            ("Channel", message.channel.mention),
+            ("Content", message.content[:400]),
         ])
 
-# ═══════════════════════════════════════════════════════════
-#  COUNTING SYSTEM  (persistent)
-# ═══════════════════════════════════════════════════════════
+# ================================================================
+#  COUNTING SYSTEM
+# ================================================================
 
 async def handle_counting(message: discord.Message):
     content  = message.content.strip()
@@ -622,9 +762,9 @@ async def handle_counting(message: discord.Message):
             pass
         try:
             n = await message.channel.send(
-                f"❌ {message.author.mention} Du kannst nicht zweimal hintereinander zählen!"
+                f"{message.author.mention} You can't count twice in a row."
             )
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(2)
             await n.delete()
         except Exception:
             pass
@@ -646,15 +786,17 @@ async def handle_counting(message: discord.Message):
             pass
     else:
         try:
-            n = await message.channel.send(f"❌ Das stimmt nicht! Die nächste Zahl ist **{expected}**.")
-            await asyncio.sleep(1.5)
+            n = await message.channel.send(
+                f"Wrong number. Next is **{expected}**."
+            )
+            await asyncio.sleep(2)
             await n.delete()
         except Exception:
             pass
 
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 #  FIRST REACTOR
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 
 @bot.event
 async def on_reaction_add(reaction: discord.Reaction, user: discord.User):
@@ -669,37 +811,45 @@ async def on_reaction_add(reaction: discord.Reaction, user: discord.User):
         return
     first_react_announced.add(msg_id)
     try:
-        await reaction.message.channel.send(f"{user.mention} war 🥇!")
+        await reaction.message.channel.send(f"{user.mention} was first 🥇")
     except Exception:
         pass
 
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 #  VOICE STATE LOG
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 
 @bot.event
-async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+async def on_voice_state_update(
+    member: discord.Member,
+    before: discord.VoiceState,
+    after: discord.VoiceState,
+):
     if not member.guild or member.guild.id != ALLOWED_GUILD_ID or member.bot:
         return
     if before.channel is None and after.channel is not None:
-        await security_log(member.guild, "Voice: Beigetreten",
-            f"{member.mention} ist einem Voice-Kanal beigetreten.",
+        await mod_log(member.guild, "Voice — Joined",
+            f"{member.mention} joined a voice channel.",
             color=discord.Color.green(),
-            fields=[("User", f"{member} ({member.id})"), ("Kanal", after.channel.name)])
+            fields=[("User", f"{member} ({member.id})"), ("Channel", after.channel.name)])
     elif before.channel is not None and after.channel is None:
-        await security_log(member.guild, "Voice: Verlassen",
-            f"{member.mention} hat einen Voice-Kanal verlassen.",
+        await mod_log(member.guild, "Voice — Left",
+            f"{member.mention} left a voice channel.",
             color=discord.Color.dark_green(),
-            fields=[("User", f"{member} ({member.id})"), ("Kanal", before.channel.name)])
+            fields=[("User", f"{member} ({member.id})"), ("Channel", before.channel.name)])
     elif before.channel != after.channel:
-        await security_log(member.guild, "Voice: Gewechselt",
-            f"{member.mention} hat den Voice-Kanal gewechselt.",
+        await mod_log(member.guild, "Voice — Moved",
+            f"{member.mention} switched voice channels.",
             color=discord.Color.blurple(),
-            fields=[("User", f"{member} ({member.id})"), ("Von", before.channel.name), ("Nach", after.channel.name)])
+            fields=[
+                ("User", f"{member} ({member.id})"),
+                ("From", before.channel.name),
+                ("To",   after.channel.name),
+            ])
 
-# ═══════════════════════════════════════════════════════════
-#  TICKET SYSTEM  (with close button + transcript)
-# ═══════════════════════════════════════════════════════════
+# ================================================================
+#  TICKET SYSTEM
+# ================================================================
 
 def is_ticket_channel(channel: discord.TextChannel) -> bool:
     return channel.category_id == TICKET_CATEGORY_ID and channel.name.startswith("ticket-")
@@ -710,72 +860,78 @@ def can_manage_ticket(member: discord.Member) -> bool:
     return any(r.id == SUPPORT_ROLE_ID or r.permissions.administrator for r in member.roles)
 
 async def _generate_transcript(channel: discord.TextChannel) -> discord.File:
-    lines = []
+    lines = [f"Transcript — #{channel.name}", f"Exported: {datetime.utcnow().strftime('%d.%m.%Y %H:%M')} UTC", ""]
     async for msg in channel.history(limit=500, oldest_first=True):
         ts = msg.created_at.strftime("%d.%m.%Y %H:%M")
         lines.append(f"[{ts}] {msg.author} ({msg.author.id}): {msg.content}")
         for att in msg.attachments:
-            lines.append(f"[{ts}] {msg.author}: [Anhang: {att.url}]")
+            lines.append(f"[{ts}] {msg.author}: [Attachment: {att.url}]")
     content = "\n".join(lines).encode("utf-8")
-    import io
     return discord.File(io.BytesIO(content), filename=f"transcript-{channel.name}.txt")
+
 
 class TicketCloseView(View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Ticket schließen", emoji="🔒", style=discord.ButtonStyle.red, custom_id="ticket_close_btn")
+    @discord.ui.button(label="Close Ticket", style=discord.ButtonStyle.red, custom_id="ticket_close_btn")
     async def close_btn(self, interaction: discord.Interaction, button: Button):
         if not can_manage_ticket(interaction.user):
-            return await interaction.response.send_message("❌ Kein Zugriff.", ephemeral=True)
-        await interaction.response.send_message("🔒 Ticket wird geschlossen...")
+            return await interaction.response.send_message("No permission.", ephemeral=True)
+        await interaction.response.send_message("Ticket is being closed...")
         try:
-            await interaction.channel.set_permissions(interaction.guild.default_role, read_messages=False, send_messages=False)
+            await interaction.channel.set_permissions(
+                interaction.guild.default_role,
+                read_messages=False,
+                send_messages=False,
+            )
         except Exception as e:
-            await interaction.channel.send(f"❌ Fehler: {e}")
+            await interaction.channel.send(f"Error: {e}")
 
-    @discord.ui.button(label="Transcript & Löschen", emoji="🗑️", style=discord.ButtonStyle.gray, custom_id="ticket_delete_btn")
+    @discord.ui.button(label="Save & Delete", style=discord.ButtonStyle.gray, custom_id="ticket_delete_btn")
     async def delete_btn(self, interaction: discord.Interaction, button: Button):
         if not can_manage_ticket(interaction.user):
-            return await interaction.response.send_message("❌ Kein Zugriff.", ephemeral=True)
-        await interaction.response.send_message("📄 Erstelle Transcript und lösche Ticket...")
+            return await interaction.response.send_message("No permission.", ephemeral=True)
+        await interaction.response.send_message("Generating transcript and deleting ticket...")
         try:
             transcript = await _generate_transcript(interaction.channel)
             log_ch = interaction.guild.get_channel(LOG_CHANNEL_ID)
             if log_ch:
-                await log_ch.send(
-                    content=f"📄 Transcript von **{interaction.channel.name}** (gelöscht von {interaction.user.mention})",
-                    file=transcript,
+                embed = discord.Embed(
+                    title="Ticket Closed",
+                    description=f"**Channel:** {interaction.channel.name}\n**Closed by:** {interaction.user.mention}",
+                    color=discord.Color.from_rgb(149, 165, 166),
+                    timestamp=datetime.utcnow(),
                 )
+                await log_ch.send(embed=embed, file=transcript)
         except Exception:
             pass
         await asyncio.sleep(2)
         try:
-            await interaction.channel.delete(reason=f"Ticket gelöscht von {interaction.user}")
+            await interaction.channel.delete(reason=f"Ticket deleted by {interaction.user}")
         except Exception:
             pass
+
 
 class TicketButton(View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Ticket erstellen", emoji="📧", style=discord.ButtonStyle.blurple, custom_id="ticket_create")
+    @discord.ui.button(label="Open Ticket", style=discord.ButtonStyle.blurple, custom_id="ticket_create")
     async def create_ticket(self, interaction: discord.Interaction, button: Button):
-        global ticket_counter
         guild    = interaction.guild
         category = guild.get_channel(TICKET_CATEGORY_ID)
 
-        # check existing ticket
         if category:
             for ch in category.text_channels:
                 if ch.name.startswith("ticket-"):
                     ow = ch.overwrites_for(interaction.user)
                     if ow.read_messages:
                         return await interaction.response.send_message(
-                            f"❌ Du hast bereits ein offenes Ticket: {ch.mention}", ephemeral=True
+                            f"You already have an open ticket: {ch.mention}", ephemeral=True
                         )
 
-        ticket_counter += 1
+        ticket_num   = _increment_ticket_counter(guild.id)
         support_role = guild.get_role(SUPPORT_ROLE_ID)
         overwrites   = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
@@ -789,43 +945,51 @@ class TicketButton(View):
 
         try:
             ticket_channel = await guild.create_text_channel(
-                name=f"ticket-{ticket_counter}",
+                name=f"ticket-{ticket_num}",
                 category=category,
                 overwrites=overwrites,
-                reason=f"Ticket von {interaction.user}",
+                reason=f"Ticket by {interaction.user}",
             )
             embed = discord.Embed(
-                title="Ticket erstellt 🎟️",
+                title="Support Ticket",
                 description=(
-                    "Beschreibe dein Anliegen so genau wie möglich.\n"
-                    "Unser Team kümmert sich so schnell wie möglich – danke für deine Geduld!"
+                    "Describe your issue as clearly as possible.\n"
+                    "Our team will assist you shortly."
                 ),
                 color=discord.Color.from_rgb(149, 165, 166),
+                timestamp=datetime.utcnow(),
             )
+            embed.set_footer(text=f"Ticket #{ticket_num}")
             pings = f"{support_role.mention} {interaction.user.mention}" if support_role else interaction.user.mention
             await ticket_channel.send(content=pings, embed=embed, view=TicketCloseView())
-            await interaction.response.send_message(f"✅ Dein Ticket: {ticket_channel.mention}", ephemeral=True)
+            await interaction.response.send_message(
+                f"Your ticket has been created: {ticket_channel.mention}", ephemeral=True
+            )
         except Exception as e:
-            await interaction.response.send_message(f"❌ Fehler: {e}", ephemeral=True)
+            await interaction.response.send_message(f"Error: {e}", ephemeral=True)
 
 
-@bot.tree.command(name="ticketpanel", description="Sendet das Ticket-Panel", guild=discord.Object(id=ALLOWED_GUILD_ID))
+@bot.tree.command(
+    name="ticketpanel",
+    description="Send the ticket panel",
+    guild=discord.Object(id=ALLOWED_GUILD_ID)
+)
 async def ticketpanel(interaction: discord.Interaction):
     if interaction.user.id not in OWNERS:
-        return await interaction.response.send_message("❌ Kein Zugriff", ephemeral=True)
+        return await interaction.response.send_message("No permission.", ephemeral=True)
     channel = interaction.guild.get_channel(TICKET_PANEL_CHANNEL_ID)
     if not channel:
-        return await interaction.response.send_message("❌ Kanal nicht gefunden.", ephemeral=True)
+        return await interaction.response.send_message("Channel not found.", ephemeral=True)
     embed = discord.Embed(
-        title="Ticket erstellen 📧",
-        description="Klicke unten, um ein Ticket zu öffnen.\nBleib höflich – wir supporten dich so schnell es geht!",
+        title="Support",
+        description="Click the button below to open a ticket.\nBe respectful — we'll help you as fast as possible.",
         color=discord.Color.from_rgb(149, 165, 166),
     )
     try:
         await channel.send(embed=embed, view=TicketButton())
-        await interaction.response.send_message("✅ Panel gesendet!", ephemeral=True)
+        await interaction.response.send_message("Panel sent.", ephemeral=True)
     except Exception as e:
-        await interaction.response.send_message(f"❌ Fehler: {e}", ephemeral=True)
+        await interaction.response.send_message(f"Error: {e}", ephemeral=True)
 
 
 @bot.command()
@@ -833,12 +997,12 @@ async def close(ctx: commands.Context):
     if ctx.guild.id != ALLOWED_GUILD_ID or not is_ticket_channel(ctx.channel):
         return
     if not can_manage_ticket(ctx.author):
-        return await ctx.send("❌ Kein Zugriff.")
-    await ctx.send("🔒 Ticket wird geschlossen...")
+        return await ctx.send("No permission.")
+    await ctx.send("Closing ticket...")
     try:
         await ctx.channel.set_permissions(ctx.guild.default_role, read_messages=False, send_messages=False)
     except Exception as e:
-        await ctx.send(f"❌ Fehler: {e}")
+        await ctx.send(f"Error: {e}")
 
 
 @bot.command(name="delete")
@@ -846,7 +1010,7 @@ async def delete_ticket(ctx: commands.Context):
     if ctx.guild.id != ALLOWED_GUILD_ID or not is_ticket_channel(ctx.channel):
         return
     if not can_manage_ticket(ctx.author):
-        return await ctx.send("❌ Kein Zugriff.")
+        return await ctx.send("No permission.")
 
     if ctx.author.id not in OWNERS:
         now = datetime.utcnow()
@@ -855,191 +1019,210 @@ async def delete_ticket(ctx: commands.Context):
             if now - t < timedelta(seconds=30)
         ]
         if len(ticket_del_tracker[ctx.author.id]) >= 3:
-            return await ctx.send("❌ Maximal 3 Tickets in 30 Sekunden löschen.", delete_after=5)
+            return await ctx.send("Maximum 3 ticket deletions per 30 seconds.", delete_after=5)
         ticket_del_tracker[ctx.author.id].append(now)
 
     try:
         transcript = await _generate_transcript(ctx.channel)
         log_ch = ctx.guild.get_channel(LOG_CHANNEL_ID)
         if log_ch:
-            await log_ch.send(
-                content=f"📄 Transcript von **{ctx.channel.name}** (gelöscht von {ctx.author.mention})",
-                file=transcript,
+            embed = discord.Embed(
+                title="Ticket Closed",
+                description=f"**Channel:** {ctx.channel.name}\n**Closed by:** {ctx.author.mention}",
+                color=discord.Color.from_rgb(149, 165, 166),
+                timestamp=datetime.utcnow(),
             )
+            await log_ch.send(embed=embed, file=transcript)
     except Exception:
         pass
     await asyncio.sleep(1)
     try:
-        await ctx.channel.delete(reason=f"Ticket gelöscht von {ctx.author}")
+        await ctx.channel.delete(reason=f"Ticket deleted by {ctx.author}")
     except Exception as e:
-        await ctx.send(f"❌ Fehler: {e}")
+        await ctx.send(f"Error: {e}")
 
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 #  MODERATION COMMANDS
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 
 @bot.command()
-async def kick(ctx: commands.Context, member: discord.Member = None, *, reason: str = "Kein Grund angegeben"):
+async def kick(ctx: commands.Context, member: discord.Member = None, *, reason: str = "No reason provided"):
     if ctx.guild.id != ALLOWED_GUILD_ID:
         return
     if not can_moderate(ctx.author):
-        return await _reply_and_clean(ctx, "❌ Kein Zugriff.")
+        return await _reply_and_clean(ctx, "Insufficient permissions.")
     if member is None:
-        return await _reply_and_clean(ctx, "❌ Verwendung: `?kick @user [Grund]`")
+        return await _reply_and_clean(ctx, "Usage: `?kick @user [reason]`")
     if member.id in OWNERS:
-        return await _reply_and_clean(ctx, "❌ Owner können nicht gekickt werden.")
+        return await _reply_and_clean(ctx, "Cannot kick an owner.")
     if member.top_role >= ctx.guild.me.top_role:
-        return await _reply_and_clean(ctx, "❌ Diese Person hat eine höhere Rolle als ich.")
+        return await _reply_and_clean(ctx, "That member has a higher role than me.")
     try:
         await member.kick(reason=f"{ctx.author}: {reason}")
-        embed = discord.Embed(
-            title="👢 Kick",
-            color=discord.Color.orange(),
-            timestamp=datetime.utcnow(),
-        )
+        embed = discord.Embed(title="Kick", color=discord.Color.orange(), timestamp=datetime.utcnow())
         embed.add_field(name="User",   value=f"{member} ({member.id})")
-        embed.add_field(name="Mod",    value=f"{ctx.author}")
-        embed.add_field(name="Grund",  value=reason)
+        embed.add_field(name="Mod",    value=str(ctx.author))
+        embed.add_field(name="Reason", value=reason)
         await ctx.send(embed=embed)
-        await security_log(ctx.guild, "Kick", f"{member.mention} wurde von {ctx.author.mention} gekickt.",
+        await mod_log(ctx.guild, "Kick",
+            f"{member.mention} was kicked by {ctx.author.mention}.",
             color=discord.Color.orange(),
-            fields=[("User", f"{member} ({member.id})"), ("Mod", str(ctx.author)), ("Grund", reason)])
+            fields=[("User", f"{member} ({member.id})"), ("Mod", str(ctx.author)), ("Reason", reason)])
     except discord.Forbidden:
-        await ctx.send("❌ Keine Berechtigung.")
+        await ctx.send("Missing permissions.")
     except Exception as e:
-        await ctx.send(f"❌ Fehler: {e}")
+        await ctx.send(f"Error: {e}")
 
 
 @bot.command()
-async def ban(ctx: commands.Context, member: discord.Member = None, *, reason: str = "Kein Grund angegeben"):
+async def ban(ctx: commands.Context, member: discord.Member = None, *, reason: str = "No reason provided"):
     if ctx.guild.id != ALLOWED_GUILD_ID:
         return
     if not can_moderate(ctx.author):
-        return await _reply_and_clean(ctx, "❌ Kein Zugriff.")
+        return await _reply_and_clean(ctx, "Insufficient permissions.")
     if member is None:
-        return await _reply_and_clean(ctx, "❌ Verwendung: `?ban @user [Grund]`")
+        return await _reply_and_clean(ctx, "Usage: `?ban @user [reason]`")
     if member.id in OWNERS:
-        return await _reply_and_clean(ctx, "❌ Owner können nicht gebannt werden.")
+        return await _reply_and_clean(ctx, "Cannot ban an owner.")
     if member.top_role >= ctx.guild.me.top_role:
-        return await _reply_and_clean(ctx, "❌ Diese Person hat eine höhere Rolle als ich.")
+        return await _reply_and_clean(ctx, "That member has a higher role than me.")
     try:
         await member.ban(reason=f"{ctx.author}: {reason}", delete_message_days=1)
-        embed = discord.Embed(title="🔨 Ban", color=discord.Color.red(), timestamp=datetime.utcnow())
-        embed.add_field(name="User",  value=f"{member} ({member.id})")
-        embed.add_field(name="Mod",   value=f"{ctx.author}")
-        embed.add_field(name="Grund", value=reason)
+        embed = discord.Embed(title="Ban", color=discord.Color.red(), timestamp=datetime.utcnow())
+        embed.add_field(name="User",   value=f"{member} ({member.id})")
+        embed.add_field(name="Mod",    value=str(ctx.author))
+        embed.add_field(name="Reason", value=reason)
         await ctx.send(embed=embed)
-        await security_log(ctx.guild, "Ban", f"{member.mention} wurde von {ctx.author.mention} gebannt.",
-            fields=[("User", f"{member} ({member.id})"), ("Mod", str(ctx.author)), ("Grund", reason)])
+        await mod_log(ctx.guild, "Ban",
+            f"{member.mention} was banned by {ctx.author.mention}.",
+            fields=[("User", f"{member} ({member.id})"), ("Mod", str(ctx.author)), ("Reason", reason)])
     except discord.Forbidden:
-        await ctx.send("❌ Keine Berechtigung.")
+        await ctx.send("Missing permissions.")
     except Exception as e:
-        await ctx.send(f"❌ Fehler: {e}")
+        await ctx.send(f"Error: {e}")
 
 
 @bot.command()
-async def unban(ctx: commands.Context, user_id: str = None, *, reason: str = "Kein Grund angegeben"):
+async def unban(ctx: commands.Context, user_id: str = None, *, reason: str = "No reason provided"):
     if ctx.guild.id != ALLOWED_GUILD_ID:
         return
     if not can_moderate(ctx.author):
-        return await _reply_and_clean(ctx, "❌ Kein Zugriff.")
+        return await _reply_and_clean(ctx, "Insufficient permissions.")
     if user_id is None or not user_id.isdigit():
-        return await _reply_and_clean(ctx, "❌ Verwendung: `?unban <UserID> [Grund]`")
+        return await _reply_and_clean(ctx, "Usage: `?unban <UserID> [reason]`")
     try:
         user = await bot.fetch_user(int(user_id))
         await ctx.guild.unban(user, reason=f"{ctx.author}: {reason}")
-        embed = discord.Embed(title="✅ Unban", color=discord.Color.green(), timestamp=datetime.utcnow())
-        embed.add_field(name="User",  value=f"{user} ({user.id})")
-        embed.add_field(name="Mod",   value=f"{ctx.author}")
-        embed.add_field(name="Grund", value=reason)
+        embed = discord.Embed(title="Unban", color=discord.Color.green(), timestamp=datetime.utcnow())
+        embed.add_field(name="User",   value=f"{user} ({user.id})")
+        embed.add_field(name="Mod",    value=str(ctx.author))
+        embed.add_field(name="Reason", value=reason)
         await ctx.send(embed=embed)
-        await security_log(ctx.guild, "Unban", f"{user.mention} wurde von {ctx.author.mention} entbannt.",
+        await mod_log(ctx.guild, "Unban",
+            f"{user.mention} was unbanned by {ctx.author.mention}.",
             color=discord.Color.green(),
-            fields=[("User", f"{user} ({user.id})"), ("Mod", str(ctx.author)), ("Grund", reason)])
+            fields=[("User", f"{user} ({user.id})"), ("Mod", str(ctx.author)), ("Reason", reason)])
     except discord.NotFound:
-        await ctx.send("❌ User nicht gefunden oder nicht gebannt.")
+        await ctx.send("User not found or not banned.")
     except Exception as e:
-        await ctx.send(f"❌ Fehler: {e}")
+        await ctx.send(f"Error: {e}")
 
 
 @bot.command()
-async def timeout(ctx: commands.Context, member: discord.Member = None, duration: str = None, *, reason: str = "Kein Grund angegeben"):
-    """Beispiel: ?timeout @user 10m Spam  |  Einheiten: s m h d"""
+async def timeout(
+    ctx: commands.Context,
+    member: discord.Member = None,
+    duration: str = None,
+    *,
+    reason: str = "No reason provided",
+):
     if ctx.guild.id != ALLOWED_GUILD_ID:
         return
     if not can_moderate(ctx.author):
-        return await _reply_and_clean(ctx, "❌ Kein Zugriff.")
+        return await _reply_and_clean(ctx, "Insufficient permissions.")
     if member is None or duration is None:
-        return await _reply_and_clean(ctx, "❌ Verwendung: `?timeout @user <Zeit> [Grund]`\nEinheiten: `s` `m` `h` `d`")
+        return await _reply_and_clean(ctx, "Usage: `?timeout @user <time> [reason]` — Units: `s` `m` `h` `d`")
 
     units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
     unit  = duration[-1].lower()
     if unit not in units or not duration[:-1].isdigit():
-        return await _reply_and_clean(ctx, "❌ Ungültige Zeit. Beispiel: `10m`, `2h`, `1d`")
+        return await _reply_and_clean(ctx, "Invalid time. Example: `10m`, `2h`, `1d`")
 
     seconds = int(duration[:-1]) * units[unit]
     if seconds > 2419200:
-        return await _reply_and_clean(ctx, "❌ Maximale Timeout-Dauer ist 28 Tage.")
+        return await _reply_and_clean(ctx, "Maximum timeout duration is 28 days.")
 
     try:
         until = discord.utils.utcnow() + timedelta(seconds=seconds)
         await member.timeout(until, reason=f"{ctx.author}: {reason}")
-        embed = discord.Embed(title="⏱️ Timeout", color=discord.Color.orange(), timestamp=datetime.utcnow())
-        embed.add_field(name="User",  value=f"{member} ({member.id})")
-        embed.add_field(name="Dauer", value=duration)
-        embed.add_field(name="Grund", value=reason)
-        embed.add_field(name="Mod",   value=str(ctx.author))
+        embed = discord.Embed(title="Timeout", color=discord.Color.orange(), timestamp=datetime.utcnow())
+        embed.add_field(name="User",     value=f"{member} ({member.id})")
+        embed.add_field(name="Duration", value=duration)
+        embed.add_field(name="Until",    value=f"<t:{int(until.timestamp())}:F>")
+        embed.add_field(name="Reason",   value=reason)
+        embed.add_field(name="Mod",      value=str(ctx.author))
         await ctx.send(embed=embed)
-        await security_log(ctx.guild, "Timeout",
-            f"{member.mention} wurde von {ctx.author.mention} getimeoutet.",
+        await mod_log(ctx.guild, "Timeout",
+            f"{member.mention} was timed out by {ctx.author.mention}.",
             color=discord.Color.orange(),
-            fields=[("User", f"{member} ({member.id})"), ("Dauer", duration), ("Grund", reason)])
+            fields=[
+                ("User",     f"{member} ({member.id})"),
+                ("Duration", duration),
+                ("Until",    f"<t:{int(until.timestamp())}:F>"),
+                ("Reason",   reason),
+            ])
     except discord.Forbidden:
-        await ctx.send("❌ Keine Berechtigung.")
+        await ctx.send("Missing permissions.")
     except Exception as e:
-        await ctx.send(f"❌ Fehler: {e}")
+        await ctx.send(f"Error: {e}")
 
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 #  WARN SYSTEM
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 
 @bot.command()
-async def warn(ctx: commands.Context, member: discord.Member = None, *, reason: str = "Kein Grund angegeben"):
+async def warn(ctx: commands.Context, member: discord.Member = None, *, reason: str = "No reason provided"):
     if ctx.guild.id != ALLOWED_GUILD_ID:
         return
     if not can_moderate(ctx.author):
-        return await _reply_and_clean(ctx, "❌ Kein Zugriff.")
+        return await _reply_and_clean(ctx, "Insufficient permissions.")
     if member is None:
-        return await _reply_and_clean(ctx, "❌ Verwendung: `?warn @user [Grund]`")
+        return await _reply_and_clean(ctx, "Usage: `?warn @user [reason]`")
 
     warn_id = _add_warn(ctx.guild.id, member.id, ctx.author.id, reason)
     warns   = _get_warns(ctx.guild.id, member.id)
 
-    embed = discord.Embed(title="⚠️ Verwarnung", color=discord.Color.yellow(), timestamp=datetime.utcnow())
-    embed.add_field(name="User",          value=f"{member} ({member.id})")
-    embed.add_field(name="Mod",           value=str(ctx.author))
-    embed.add_field(name="Grund",         value=reason)
-    embed.add_field(name="Warn ID",       value=f"#{warn_id}")
-    embed.add_field(name="Total Warns",   value=str(len(warns)))
+    embed = discord.Embed(title="Warning", color=discord.Color.yellow(), timestamp=datetime.utcnow())
+    embed.add_field(name="User",        value=f"{member} ({member.id})")
+    embed.add_field(name="Mod",         value=str(ctx.author))
+    embed.add_field(name="Reason",      value=reason)
+    embed.add_field(name="Warn ID",     value=f"#{warn_id}")
+    embed.add_field(name="Total Warns", value=str(len(warns)))
     await ctx.send(embed=embed)
 
-    # try to DM
+    # DM
+    dm_status = "DM sent"
     try:
         dm_embed = discord.Embed(
-            title=f"⚠️ Du wurdest auf **{ctx.guild.name}** verwarnt",
-            description=f"**Grund:** {reason}\n**Warn #{warn_id}** | Gesamt: {len(warns)}",
+            title=f"You received a warning on {ctx.guild.name}",
+            description=f"**Reason:** {reason}\n**Warn #{warn_id}** — Total: {len(warns)}",
             color=discord.Color.yellow(),
             timestamp=datetime.utcnow(),
         )
         await member.send(embed=dm_embed)
     except Exception:
-        pass
+        dm_status = "DM failed (blocked)"
 
-    await security_log(ctx.guild, "Verwarnung",
-        f"{member.mention} wurde von {ctx.author.mention} verwarnt.",
+    await mod_log(ctx.guild, "Warning",
+        f"{member.mention} was warned by {ctx.author.mention}.",
         color=discord.Color.yellow(),
-        fields=[("User", f"{member} ({member.id})"), ("Grund", reason),
-                ("Warn ID", f"#{warn_id}"), ("Total", len(warns))])
+        fields=[
+            ("User",    f"{member} ({member.id})"),
+            ("Reason",  reason),
+            ("Warn ID", f"#{warn_id}"),
+            ("Total",   len(warns)),
+            ("DM",      dm_status),
+        ])
 
 
 @bot.command()
@@ -1047,27 +1230,26 @@ async def warns(ctx: commands.Context, member: discord.Member = None):
     if ctx.guild.id != ALLOWED_GUILD_ID:
         return
     if not can_moderate(ctx.author):
-        return await _reply_and_clean(ctx, "❌ Kein Zugriff.")
+        return await _reply_and_clean(ctx, "Insufficient permissions.")
     if member is None:
-        return await _reply_and_clean(ctx, "❌ Verwendung: `?warns @user`")
+        return await _reply_and_clean(ctx, "Usage: `?warns @user`")
 
     warn_list = _get_warns(ctx.guild.id, member.id)
     embed = discord.Embed(
-        title=f"⚠️ Verwarnungen von {member}",
+        title=f"Warnings — {member}",
         color=discord.Color.yellow(),
         timestamp=datetime.utcnow(),
     )
     embed.set_thumbnail(url=member.display_avatar.url)
     if not warn_list:
-        embed.description = "Keine Verwarnungen."
+        embed.description = "No warnings on record."
     else:
         for w_id, mod_id, reason, ts in warn_list:
-            mod = ctx.guild.get_member(mod_id)
+            mod     = ctx.guild.get_member(mod_id)
             mod_str = str(mod) if mod else f"ID:{mod_id}"
-            date_str = ts[:10]
             embed.add_field(
-                name=f"Warn #{w_id} – {date_str}",
-                value=f"**Grund:** {reason}\n**Mod:** {mod_str}",
+                name=f"#{w_id} — {ts[:10]}",
+                value=f"**Reason:** {reason}\n**Mod:** {mod_str}",
                 inline=False,
             )
     await ctx.send(embed=embed)
@@ -1078,13 +1260,13 @@ async def clearwarn(ctx: commands.Context, warn_id: str = None):
     if ctx.guild.id != ALLOWED_GUILD_ID:
         return
     if not can_moderate(ctx.author):
-        return await _reply_and_clean(ctx, "❌ Kein Zugriff.")
+        return await _reply_and_clean(ctx, "Insufficient permissions.")
     if warn_id is None or not warn_id.isdigit():
-        return await _reply_and_clean(ctx, "❌ Verwendung: `?clearwarn <WarnID>`")
+        return await _reply_and_clean(ctx, "Usage: `?clearwarn <WarnID>`")
     if _del_warn(int(warn_id), ctx.guild.id):
-        await ctx.send(f"✅ Verwarnung **#{warn_id}** wurde gelöscht.", delete_after=5)
+        await ctx.send(f"Warning **#{warn_id}** deleted.", delete_after=5)
     else:
-        await ctx.send(f"❌ Verwarnung **#{warn_id}** nicht gefunden.", delete_after=5)
+        await ctx.send(f"Warning **#{warn_id}** not found.", delete_after=5)
 
 
 @bot.command()
@@ -1092,104 +1274,124 @@ async def clearwarns(ctx: commands.Context, member: discord.Member = None):
     if ctx.guild.id != ALLOWED_GUILD_ID:
         return
     if not can_moderate(ctx.author):
-        return await _reply_and_clean(ctx, "❌ Kein Zugriff.")
+        return await _reply_and_clean(ctx, "Insufficient permissions.")
     if member is None:
-        return await _reply_and_clean(ctx, "❌ Verwendung: `?clearwarns @user`")
+        return await _reply_and_clean(ctx, "Usage: `?clearwarns @user`")
     count = _clear_warns(ctx.guild.id, member.id)
-    await ctx.send(f"✅ **{count}** Verwarnungen von {member.mention} gelöscht.", delete_after=5)
+    await ctx.send(f"**{count}** warnings cleared for {member.mention}.", delete_after=5)
 
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 #  USERINFO / SERVERINFO / AVATAR
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 
-@bot.tree.command(name="userinfo", description="Zeigt Infos über einen User", guild=discord.Object(id=ALLOWED_GUILD_ID))
+@bot.tree.command(
+    name="userinfo",
+    description="Show info about a user",
+    guild=discord.Object(id=ALLOWED_GUILD_ID)
+)
 async def userinfo(interaction: discord.Interaction, member: discord.Member = None):
     member = member or interaction.user
     roles  = [r.mention for r in reversed(member.roles) if r.name != "@everyone"]
 
     embed = discord.Embed(
-        title=f"👤 {member}",
+        title=str(member),
         color=member.color if member.color.value else discord.Color.from_rgb(149, 165, 166),
         timestamp=datetime.utcnow(),
     )
     embed.set_thumbnail(url=member.display_avatar.url)
-    embed.add_field(name="ID",              value=member.id,                                              inline=True)
-    embed.add_field(name="Nickname",        value=member.nick or "–",                                    inline=True)
-    embed.add_field(name="Bot",             value="✅" if member.bot else "❌",                           inline=True)
-    embed.add_field(name="Account erstellt", value=f"<t:{int(member.created_at.timestamp())}:R>",        inline=True)
-    embed.add_field(name="Beigetreten",     value=f"<t:{int(member.joined_at.timestamp())}:R>",          inline=True)
-    embed.add_field(name="Boosting",        value=f"<t:{int(member.premium_since.timestamp())}:R>" if member.premium_since else "❌", inline=True)
-    embed.add_field(name=f"Rollen ({len(roles)})", value=" ".join(roles[:20]) or "–", inline=False)
-    embed.set_footer(text=f"Angefragt von {interaction.user}")
+    embed.add_field(name="ID",       value=member.id,                                     inline=True)
+    embed.add_field(name="Nickname", value=member.nick or "—",                            inline=True)
+    embed.add_field(name="Bot",      value="Yes" if member.bot else "No",                 inline=True)
+    embed.add_field(name="Created",  value=f"<t:{int(member.created_at.timestamp())}:R>", inline=True)
+    embed.add_field(name="Joined",   value=f"<t:{int(member.joined_at.timestamp())}:R>",  inline=True)
+    embed.add_field(
+        name="Boosting",
+        value=f"<t:{int(member.premium_since.timestamp())}:R>" if member.premium_since else "No",
+        inline=True,
+    )
+    embed.add_field(name=f"Roles ({len(roles)})", value=" ".join(roles[:20]) or "—", inline=False)
+    embed.set_footer(text=f"Requested by {interaction.user}")
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="serverinfo", description="Zeigt Infos über den Server", guild=discord.Object(id=ALLOWED_GUILD_ID))
+@bot.tree.command(
+    name="serverinfo",
+    description="Show server info",
+    guild=discord.Object(id=ALLOWED_GUILD_ID)
+)
 async def serverinfo(interaction: discord.Interaction):
     g = interaction.guild
     embed = discord.Embed(
-        title=f"🏠 {g.name}",
+        title=g.name,
         color=discord.Color.from_rgb(149, 165, 166),
         timestamp=datetime.utcnow(),
     )
     if g.icon:
         embed.set_thumbnail(url=g.icon.url)
-    embed.add_field(name="ID",          value=g.id,                                              inline=True)
-    embed.add_field(name="Owner",       value=f"<@{g.owner_id}>",                               inline=True)
-    embed.add_field(name="Erstellt",    value=f"<t:{int(g.created_at.timestamp())}:R>",         inline=True)
-    embed.add_field(name="Mitglieder",  value=g.member_count,                                   inline=True)
-    embed.add_field(name="Rollen",      value=len(g.roles),                                     inline=True)
-    embed.add_field(name="Kanäle",      value=len(g.channels),                                  inline=True)
-    embed.add_field(name="Boosts",      value=g.premium_subscription_count,                     inline=True)
-    embed.add_field(name="Boost Level", value=g.premium_tier,                                   inline=True)
-    embed.add_field(name="Verifizierung", value=str(g.verification_level),                      inline=True)
+    embed.add_field(name="ID",           value=g.id,                                        inline=True)
+    embed.add_field(name="Owner",        value=f"<@{g.owner_id}>",                          inline=True)
+    embed.add_field(name="Created",      value=f"<t:{int(g.created_at.timestamp())}:R>",    inline=True)
+    embed.add_field(name="Members",      value=g.member_count,                              inline=True)
+    embed.add_field(name="Roles",        value=len(g.roles),                                inline=True)
+    embed.add_field(name="Channels",     value=len(g.channels),                             inline=True)
+    embed.add_field(name="Boosts",       value=g.premium_subscription_count,                inline=True)
+    embed.add_field(name="Boost Level",  value=g.premium_tier,                              inline=True)
+    embed.add_field(name="Verification", value=str(g.verification_level),                   inline=True)
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="avatar", description="Zeigt den Avatar eines Users", guild=discord.Object(id=ALLOWED_GUILD_ID))
+@bot.tree.command(
+    name="avatar",
+    description="Show a user's avatar",
+    guild=discord.Object(id=ALLOWED_GUILD_ID)
+)
 async def avatar(interaction: discord.Interaction, member: discord.Member = None):
     member = member or interaction.user
-    embed  = discord.Embed(title=f"🖼️ Avatar von {member}", color=discord.Color.from_rgb(149, 165, 166))
+    embed  = discord.Embed(
+        title=f"Avatar — {member}",
+        color=discord.Color.from_rgb(149, 165, 166),
+    )
     embed.set_image(url=member.display_avatar.url)
     await interaction.response.send_message(embed=embed)
 
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 #  PURGE
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 
 @bot.command()
 async def purge(ctx: commands.Context, amount: str = None):
     if ctx.guild.id != ALLOWED_GUILD_ID:
         return
     if not can_moderate(ctx.author):
-        return await _reply_and_clean(ctx, "❌ Kein Zugriff.")
+        return await _reply_and_clean(ctx, "Insufficient permissions.")
     try:
         await ctx.message.delete()
     except Exception:
         pass
     if amount is None:
-        return await ctx.send("❌ Verwendung: `?purge all` oder `?purge <Anzahl>`", delete_after=3)
+        return await ctx.send("Usage: `?purge all` or `?purge <amount>`", delete_after=3)
 
     if amount.lower() == "all":
         deleted = await ctx.channel.purge(limit=None)
     else:
         if not amount.isdigit() or int(amount) < 1:
-            return await ctx.send("❌ Ungültige Anzahl.", delete_after=3)
+            return await ctx.send("Invalid amount.", delete_after=3)
+        if int(amount) > 1000:
+            return await ctx.send("Maximum 1000 messages per purge.", delete_after=3)
         deleted = await ctx.channel.purge(limit=int(amount))
 
-    note = await ctx.send(f"🗑️ {len(deleted)} Nachrichten gelöscht.")
+    note = await ctx.send(f"{len(deleted)} messages deleted.")
     await asyncio.sleep(3)
     try:
         await note.delete()
     except Exception:
         pass
 
-# ═══════════════════════════════════════════════════════════
-#  ROLE COMMAND  (Carl-bot style)
-# ═══════════════════════════════════════════════════════════
+# ================================================================
+#  ROLE COMMAND
+# ================================================================
 
 def _find_role(guild: discord.Guild, query: str) -> list[discord.Role]:
-    """Returns list of matching roles (ID → exact name → partial name)."""
     query = query.strip()
     if query.isdigit():
         r = guild.get_role(int(query))
@@ -1199,126 +1401,158 @@ def _find_role(guild: discord.Guild, query: str) -> list[discord.Role]:
         return exact
     return [r for r in guild.roles if query.lower() in r.name.lower()]
 
+
 @bot.command(name="role")
 async def role_cmd(ctx: commands.Context, member: discord.Member = None, *, role_input: str = None):
     if ctx.guild.id != ALLOWED_GUILD_ID:
         return
     if not can_use_role_cmd(ctx.author):
-        return await _reply_and_clean(ctx, "❌ Du hast keine Berechtigung für diesen Command.")
+        return await _reply_and_clean(ctx, "Insufficient permissions.")
     if member is None or role_input is None:
-        return await _reply_and_clean(ctx, "❌ Verwendung: `?role @user <Rollenname oder ID>`")
+        return await _reply_and_clean(ctx, "Usage: `?role @user <role name or ID>`")
 
     matches = _find_role(ctx.guild, role_input)
-
     if not matches:
-        return await _reply_and_clean(ctx, f"❌ Keine Rolle mit **{role_input}** gefunden.")
+        return await _reply_and_clean(ctx, f"No role found matching **{role_input}**.")
     if len(matches) > 1:
         names = ", ".join(f"`{r.name}`" for r in matches[:8])
-        return await _reply_and_clean(ctx, f"⚠️ Mehrere Rollen gefunden: {names} – bitte genauer angeben.", delay=6)
+        return await _reply_and_clean(ctx, f"Multiple roles found: {names} — be more specific.", delay=6)
 
     role = matches[0]
-
     if role >= ctx.guild.me.top_role:
-        return await _reply_and_clean(ctx, "❌ Diese Rolle ist gleich hoch oder höher als meine eigene.")
+        return await _reply_and_clean(ctx, "That role is equal to or higher than my highest role.")
     if role.permissions.administrator and ctx.author.id not in OWNERS:
-        return await _reply_and_clean(ctx, "❌ Admin-Rollen können nur von Owners vergeben werden.")
+        return await _reply_and_clean(ctx, "Only owners can assign admin roles.")
 
     try:
         if role in member.roles:
-            await member.remove_roles(role, reason=f"?role von {ctx.author}")
-            action = "entfernt"
-            color  = discord.Color.red()
-            emoji  = "➖"
+            await member.remove_roles(role, reason=f"?role by {ctx.author}")
+            action, color = "removed", discord.Color.red()
         else:
-            await member.add_roles(role, reason=f"?role von {ctx.author}")
-            action = "hinzugefügt"
-            color  = discord.Color.green()
-            emoji  = "➕"
+            await member.add_roles(role, reason=f"?role by {ctx.author}")
+            action, color = "added", discord.Color.green()
 
         embed = discord.Embed(color=color, timestamp=datetime.utcnow())
-        embed.description = f"{emoji} Rolle **{role.name}** wurde {member.mention} **{action}**."
-        embed.add_field(name="Rolle", value=f"{role.mention} ({role.id})")
-        embed.add_field(name="User",  value=f"{member} ({member.id})")
-        embed.set_footer(text=f"Ausgeführt von {ctx.author} • {ctx.author.id}")
+        embed.description = f"Role **{role.name}** {action} for {member.mention}."
+        embed.add_field(name="Role", value=f"{role.mention} ({role.id})")
+        embed.add_field(name="User", value=f"{member} ({member.id})")
+        embed.set_footer(text=f"By {ctx.author} · {ctx.author.id}")
         await ctx.send(embed=embed)
 
-        await security_log(ctx.guild, "?role verwendet",
-            f"{ctx.author.mention} hat die Rolle **{role.name}** bei {member.mention} {action}.",
+        await mod_log(ctx.guild, "Role Updated",
+            f"{ctx.author.mention} {action} role **{role.name}** for {member.mention}.",
             color=discord.Color.blurple(),
-            fields=[("Mod",   f"{ctx.author} ({ctx.author.id})"),
-                    ("User",  f"{member} ({member.id})"),
-                    ("Rolle", f"{role.name} ({role.id})")])
-
+            fields=[
+                ("Mod",  f"{ctx.author} ({ctx.author.id})"),
+                ("User", f"{member} ({member.id})"),
+                ("Role", f"{role.name} ({role.id})"),
+            ])
     except discord.Forbidden:
-        await ctx.send("❌ Keine Berechtigung für diese Rolle.")
+        await ctx.send("Missing permissions for that role.")
     except Exception as e:
-        await ctx.send(f"❌ Fehler: {e}")
+        await ctx.send(f"Error: {e}")
 
-# ═══════════════════════════════════════════════════════════
-#  COUNTING SETCOUNT
-# ═══════════════════════════════════════════════════════════
+# ================================================================
+#  SETCOUNT
+# ================================================================
 
 @bot.command()
 async def setcount(ctx: commands.Context, number: int = None):
     if ctx.guild.id != ALLOWED_GUILD_ID:
         return
     if not is_owner(ctx.author.id):
-        return await _reply_and_clean(ctx, "❌ Kein Zugriff.")
+        return await _reply_and_clean(ctx, "No permission.")
     if number is None:
-        return await _reply_and_clean(ctx, "❌ Verwendung: `?setcount <Zahl>`")
+        return await _reply_and_clean(ctx, "Usage: `?setcount <number>`")
     counting_state["current"]   = number
     counting_state["last_user"] = None
     _save_count(ctx.guild.id, number, 0)
-    await ctx.send(f"✅ Zähler wurde auf **{number}** gesetzt.", delete_after=5)
+    await ctx.send(f"Counter set to **{number}**.", delete_after=5)
     try:
         await ctx.message.delete()
     except Exception:
         pass
 
-# ═══════════════════════════════════════════════════════════
-#  INVITES SLASH COMMANDS
-# ═══════════════════════════════════════════════════════════
+# ================================================================
+#  INVITE SLASH COMMANDS
+# ================================================================
 
-@bot.tree.command(name="invite", description="Zeigt die Invite-Anzahl eines Users", guild=discord.Object(id=ALLOWED_GUILD_ID))
+@bot.tree.command(
+    name="invite",
+    description="Show invite count for a user",
+    guild=discord.Object(id=ALLOWED_GUILD_ID)
+)
 async def invite_cmd(interaction: discord.Interaction, member: discord.Member):
-    count = _get_invites(interaction.guild.id, member.id)
-    embed = discord.Embed(
-        description=f"📨 **{member.name}** hat **{count} Invites**",
-        color=discord.Color.from_rgb(149, 165, 166),
-    )
+    total, left, fake = _get_invites(interaction.guild.id, member.id)
+    real = total - left - fake
+
+    embed = discord.Embed(color=discord.Color.from_rgb(149, 165, 166), timestamp=datetime.utcnow())
+    embed.set_author(name=f"{member.name}'s Invites", icon_url=member.display_avatar.url)
+    embed.description = f"**{member.mention}** has **{real}** invites"
+    embed.add_field(name="Total",  value=total, inline=True)
+    embed.add_field(name="Left",   value=left,  inline=True)
+    embed.add_field(name="Fake",   value=fake,  inline=True)
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="invites_set", description="Setzt die Invite-Anzahl eines Users manuell", guild=discord.Object(id=ALLOWED_GUILD_ID))
+@bot.tree.command(
+    name="invites_set",
+    description="Manually set invite count for a user",
+    guild=discord.Object(id=ALLOWED_GUILD_ID)
+)
 async def invites_set_cmd(interaction: discord.Interaction, member: discord.Member, amount: int):
     if interaction.user.id not in OWNERS:
-        return await interaction.response.send_message("❌ Kein Zugriff", ephemeral=True)
+        return await interaction.response.send_message("No permission.", ephemeral=True)
     _set_invites(interaction.guild.id, member.id, amount)
-    await interaction.response.send_message(f"✅ Invites von {member.mention} auf **{amount}** gesetzt.", ephemeral=True)
+    await interaction.response.send_message(
+        f"Invites for {member.mention} set to **{amount}**.", ephemeral=True
+    )
 
 
-@bot.tree.command(name="leaderboard", description="Zeigt das Invite-Leaderboard", guild=discord.Object(id=ALLOWED_GUILD_ID))
+@bot.tree.command(
+    name="leaderboard",
+    description="Show invite leaderboard",
+    guild=discord.Object(id=ALLOWED_GUILD_ID)
+)
 async def leaderboard_cmd(interaction: discord.Interaction):
     top = _get_top(interaction.guild.id)
     if not top:
-        return await interaction.response.send_message("Noch keine Invites gespeichert.", ephemeral=True)
-    embed = discord.Embed(title="🏆 Invite Leaderboard", color=discord.Color.from_rgb(149, 165, 166))
-    for i, (user_id, count) in enumerate(top, start=1):
+        return await interaction.response.send_message("No invite data yet.", ephemeral=True)
+
+    embed = discord.Embed(
+        title="Invite Leaderboard",
+        color=discord.Color.from_rgb(149, 165, 166),
+        timestamp=datetime.utcnow(),
+    )
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    for i, (user_id, total, left, fake) in enumerate(top, start=1):
         user = bot.get_user(user_id)
-        name = user.name if user else f"User {user_id}"
-        embed.add_field(name=f"{i}. {name}", value=f"📨 {count} Invites", inline=False)
+        name = user.name if user else f"Unknown ({user_id})"
+        real = total - left - fake
+        prefix = medals.get(i, f"{i}.")
+        embed.add_field(
+            name=f"{prefix} {name}",
+            value=f"**{real}** invites ({total} total · {left} left · {fake} fake)",
+            inline=False,
+        )
     await interaction.response.send_message(embed=embed)
 
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 #  SECURITY SYSTEM
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 
 @bot.event
 async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
     if channel.guild.id != ALLOWED_GUILD_ID:
         return
 
-    # save channel data BEFORE audit log lookup
+    # Don't restore ticket channels — they should stay deleted
+    if (
+        getattr(channel, "category_id", None) == TICKET_CATEGORY_ID
+        and channel.name.startswith("ticket-")
+    ):
+        return
+
     saved = {
         "name":      channel.name,
         "type":      channel.type,
@@ -1338,37 +1572,36 @@ async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
     if not user or is_whitelisted(channel.guild.get_member(user.id) or user):
         return
 
-    # ban
     try:
-        await channel.guild.ban(user, reason="Channel Delete – Auto-Schutz")
-        await security_log(channel.guild, "Channel gelöscht → Ban",
-            f"{user.mention} hat **#{saved['name']}** gelöscht und wurde gebannt.",
+        await channel.guild.ban(user, reason="Channel Delete — Auto Protection")
+        await mod_log(channel.guild, "Channel Deleted — Auto Ban",
+            f"{user.mention} deleted **#{saved['name']}** and was banned.",
             fields=[("User", f"{user} ({user.id})"), ("Channel", saved["name"])])
     except Exception:
         pass
 
-    # restore channel
+    # Restore channel
     try:
         kwargs = dict(
             name=saved["name"],
             overwrites=saved["overwrites"],
             category=saved["category"],
             position=saved["position"],
-            reason="Auto-Wiederherstellung (Schutz)",
+            reason="Auto-Restore (Protection)",
         )
         if saved["type"] == discord.ChannelType.text:
             if saved["topic"]:
                 kwargs["topic"] = saved["topic"]
-            kwargs["nsfw"]       = saved["nsfw"]
-            kwargs["slowmode_delay"] = saved["slowmode"]
+            kwargs["nsfw"]            = saved["nsfw"]
+            kwargs["slowmode_delay"]  = saved["slowmode"]
             restored = await channel.guild.create_text_channel(**kwargs)
         elif saved["type"] == discord.ChannelType.voice:
             restored = await channel.guild.create_voice_channel(**kwargs)
         else:
             restored = await channel.guild.create_text_channel(**kwargs)
 
-        await security_log(channel.guild, "Channel wiederhergestellt",
-            f"Channel **#{saved['name']}** wurde automatisch wiederhergestellt.",
+        await mod_log(channel.guild, "Channel Restored",
+            f"Channel **#{saved['name']}** was automatically restored.",
             color=discord.Color.green(),
             fields=[("Channel", restored.mention)])
     except Exception:
@@ -1395,9 +1628,9 @@ async def on_guild_channel_create(channel: discord.abc.GuildChannel):
     ]
     if len(channel_create_tracker[user.id]) >= CREATE_MAX:
         try:
-            await channel.guild.ban(user, reason=f"Channel-Create-Spam ({CREATE_MAX}+ in {CREATE_INTERVAL}s)")
-            await security_log(channel.guild, "Channel Create Spam → Ban",
-                f"{user.mention} hat {len(channel_create_tracker[user.id])} Channels in {CREATE_INTERVAL}s erstellt.",
+            await channel.guild.ban(user, reason=f"Channel Spam ({CREATE_MAX}+ in {CREATE_INTERVAL}s)")
+            await mod_log(channel.guild, "Channel Spam — Auto Ban",
+                f"{user.mention} created {len(channel_create_tracker[user.id])} channels in {CREATE_INTERVAL}s.",
                 fields=[("User", f"{user} ({user.id})")])
             channel_create_tracker[user.id].clear()
         except Exception:
@@ -1415,7 +1648,6 @@ async def on_guild_role_delete(role: discord.Role):
         "permissions": role.permissions,
         "hoist":       role.hoist,
         "mentionable": role.mentionable,
-        "position":    role.position,
     }
 
     await asyncio.sleep(0.3)
@@ -1427,24 +1659,26 @@ async def on_guild_role_delete(role: discord.Role):
         return
 
     try:
-        await role.guild.ban(user, reason="Role Delete – Auto-Schutz")
-        await security_log(role.guild, "Rolle gelöscht → Ban",
-            f"{user.mention} hat die Rolle **{saved['name']}** gelöscht und wurde gebannt.",
-            fields=[("User", f"{user} ({user.id})"), ("Rolle", saved["name"])])
+        await role.guild.ban(user, reason="Role Delete — Auto Protection")
+        await mod_log(role.guild, "Role Deleted — Auto Ban",
+            f"{user.mention} deleted role **{saved['name']}** and was banned.",
+            fields=[("User", f"{user} ({user.id})"), ("Role", saved["name"])])
     except Exception:
         pass
 
     try:
         restored = await role.guild.create_role(
-            name=saved["name"], color=saved["color"],
-            permissions=saved["permissions"], hoist=saved["hoist"],
+            name=saved["name"],
+            color=saved["color"],
+            permissions=saved["permissions"],
+            hoist=saved["hoist"],
             mentionable=saved["mentionable"],
-            reason="Auto-Wiederherstellung (Schutz)",
+            reason="Auto-Restore (Protection)",
         )
-        await security_log(role.guild, "Rolle wiederhergestellt",
-            f"Rolle **{saved['name']}** wurde automatisch wiederhergestellt.",
+        await mod_log(role.guild, "Role Restored",
+            f"Role **{saved['name']}** was automatically restored.",
             color=discord.Color.green(),
-            fields=[("Rolle", restored.mention)])
+            fields=[("Role", restored.mention)])
     except Exception:
         pass
 
@@ -1469,9 +1703,9 @@ async def on_guild_role_create(role: discord.Role):
     ]
     if len(role_create_tracker[user.id]) >= CREATE_MAX:
         try:
-            await role.guild.ban(user, reason=f"Role-Create-Spam ({CREATE_MAX}+ in {CREATE_INTERVAL}s)")
-            await security_log(role.guild, "Role Create Spam → Ban",
-                f"{user.mention} hat {len(role_create_tracker[user.id])} Rollen in {CREATE_INTERVAL}s erstellt.",
+            await role.guild.ban(user, reason=f"Role Spam ({CREATE_MAX}+ in {CREATE_INTERVAL}s)")
+            await mod_log(role.guild, "Role Spam — Auto Ban",
+                f"{user.mention} created {len(role_create_tracker[user.id])} roles in {CREATE_INTERVAL}s.",
                 fields=[("User", f"{user} ({user.id})")])
             role_create_tracker[user.id].clear()
         except Exception:
@@ -1492,10 +1726,10 @@ async def on_webhooks_update(channel: discord.TextChannel):
     try:
         for w in await channel.webhooks():
             await w.delete()
-        await channel.guild.ban(user, reason="Webhook-Angriff – Auto-Schutz")
-        await security_log(channel.guild, "Webhook Angriff → Ban",
-            f"{user.mention} hat einen Webhook erstellt und wurde gebannt.",
-            fields=[("User", f"{user} ({user.id})"), ("Kanal", channel.mention)])
+        await channel.guild.ban(user, reason="Webhook Attack — Auto Protection")
+        await mod_log(channel.guild, "Webhook Attack — Auto Ban",
+            f"{user.mention} created a webhook and was banned.",
+            fields=[("User", f"{user} ({user.id})"), ("Channel", channel.mention)])
     except Exception:
         pass
 
@@ -1518,35 +1752,9 @@ async def on_member_ban(guild: discord.Guild, user: discord.User):
     if len(ban_tracker[actor.id]) >= 2:
         try:
             await guild.ban(actor, reason="Mass Ban (2+ in 20s)")
-            await security_log(guild, "Mass Ban → Ban",
-                f"{actor.mention} hat 2+ Bans in 20s durchgeführt.",
-                fields=[("User", f"{actor} ({actor.id})"), ("Anzahl", len(ban_tracker[actor.id]))])
-        except Exception:
-            pass
-
-
-@bot.event
-async def on_member_remove(member: discord.Member):
-    guild = member.guild
-    if guild.id != ALLOWED_GUILD_ID:
-        return
-    await asyncio.sleep(0.3)
-    entry = await get_latest_audit(guild, discord.AuditLogAction.kick)
-    if not entry or entry.target.id != member.id:
-        return
-    actor = entry.user
-    if not actor or is_whitelisted(guild.get_member(actor.id) or actor):
-        return
-
-    now = datetime.utcnow()
-    kick_tracker[actor.id] = [t for t in kick_tracker[actor.id] if now - t < timedelta(seconds=20)]
-    kick_tracker[actor.id].append(now)
-    if len(kick_tracker[actor.id]) >= 2:
-        try:
-            await guild.ban(actor, reason="Mass Kick (2+ in 20s)")
-            await security_log(guild, "Mass Kick → Ban",
-                f"{actor.mention} hat 2+ Kicks in 20s durchgeführt.",
-                fields=[("User", f"{actor} ({actor.id})"), ("Anzahl", len(kick_tracker[actor.id]))])
+            await mod_log(guild, "Mass Ban — Auto Ban",
+                f"{actor.mention} banned 2+ members in 20 seconds.",
+                fields=[("User", f"{actor} ({actor.id})"), ("Count", len(ban_tracker[actor.id]))])
         except Exception:
             pass
 
@@ -1556,12 +1764,12 @@ async def on_audit_log_entry_create(entry: discord.AuditLogEntry):
     if entry.guild.id != ALLOWED_GUILD_ID:
         return
 
-    # ── mass timeout ────────────────────────────────────
+    # ── mass timeout ────────────────────────────────────────
     if entry.action == discord.AuditLogAction.member_update:
         actor = entry.user
         if not actor or is_whitelisted(entry.guild.get_member(actor.id) or actor):
             return
-        changes      = entry.changes
+        changes       = entry.changes
         after_changes = {c.key: c.new for c in changes.after} if hasattr(changes, "after") else {}
         if "timed_out_until" in after_changes and after_changes["timed_out_until"] is not None:
             now = datetime.utcnow()
@@ -1573,13 +1781,13 @@ async def on_audit_log_entry_create(entry: discord.AuditLogEntry):
             if len(timeout_tracker[actor.id]) >= 2:
                 try:
                     await entry.guild.ban(actor, reason="Mass Timeout (2+ in 15s)")
-                    await security_log(entry.guild, "Mass Timeout → Ban",
-                        f"{actor.mention} hat 2+ Timeouts in 15s vergeben.",
-                        fields=[("User", f"{actor} ({actor.id})"), ("Anzahl", len(timeout_tracker[actor.id]))])
+                    await mod_log(entry.guild, "Mass Timeout — Auto Ban",
+                        f"{actor.mention} timed out 2+ members in 15 seconds.",
+                        fields=[("User", f"{actor} ({actor.id})"), ("Count", len(timeout_tracker[actor.id]))])
                 except Exception:
                     pass
 
-    # ── admin perm grant ────────────────────────────────
+    # ── admin perm grant ────────────────────────────────────
     if entry.action == discord.AuditLogAction.role_update:
         actor = entry.user
         if not actor or is_whitelisted(entry.guild.get_member(actor.id) or actor):
@@ -1597,186 +1805,201 @@ async def on_audit_log_entry_create(entry: discord.AuditLogEntry):
             try:
                 p = discord.Permissions(after_perms.value)
                 p.administrator = False
-                await role.edit(permissions=p, reason="Admin-Perm entfernt (Schutz)")
+                await role.edit(permissions=p, reason="Admin perm removed (Protection)")
             except Exception:
                 pass
             m = entry.guild.get_member(actor.id)
             if m:
                 try:
-                    await m.kick(reason="Versuch Admin-Rechte zu vergeben")
-                    await security_log(entry.guild, "Admin-Perm Versuch → Kick",
-                        f"{actor.mention} hat versucht Admin-Rechte zu vergeben.",
-                        fields=[("User", f"{actor} ({actor.id})"), ("Rolle", role.name)])
+                    await m.kick(reason="Attempted to grant admin permissions")
+                    await mod_log(entry.guild, "Admin Perm Attempt — Kick",
+                        f"{actor.mention} tried to grant admin permissions.",
+                        fields=[("User", f"{actor} ({actor.id})"), ("Role", role.name)])
                 except Exception:
                     pass
 
-    # ── server update log ───────────────────────────────
+    # ── server update log ───────────────────────────────────
     if entry.action == discord.AuditLogAction.guild_update:
         actor = entry.user
         if actor and not actor.bot:
-            await security_log(entry.guild, "Server-Einstellungen geändert",
-                f"{actor.mention} hat Server-Einstellungen geändert.",
+            await mod_log(entry.guild, "Server Settings Changed",
+                f"{actor.mention} modified server settings.",
                 color=discord.Color.orange(),
                 fields=[("User", f"{actor} ({actor.id})")])
 
-    # ── bot added log ───────────────────────────────────
+    # ── bot added log ───────────────────────────────────────
     if entry.action == discord.AuditLogAction.bot_add:
         actor     = entry.user
         bot_added = entry.target
-        await security_log(entry.guild, "Bot hinzugefügt",
-            f"{actor.mention} hat einen Bot hinzugefügt.",
+        await mod_log(entry.guild, "Bot Added",
+            f"{actor.mention} added a bot to the server.",
             color=discord.Color.orange(),
-            fields=[("Hinzugefügt von", f"{actor} ({actor.id})"),
-                    ("Bot", f"{bot_added} ({bot_added.id})" if bot_added else "?")])
+            fields=[
+                ("Added by", f"{actor} ({actor.id})"),
+                ("Bot",      f"{bot_added} ({bot_added.id})" if bot_added else "Unknown"),
+            ])
 
-    # ── role assigned log ───────────────────────────────
-    if entry.action == discord.AuditLogAction.member_role_update:
-        actor  = entry.user
-        target = entry.target
-        if actor and not actor.bot:
-            await security_log(entry.guild, "Rollen-Vergabe",
-                f"{actor.mention} hat die Rollen von {target.mention if target else '?'} geändert.",
-                color=discord.Color.blurple(),
-                fields=[("Mod",  f"{actor} ({actor.id})"),
-                        ("Ziel", f"{target} ({target.id})" if target else "?")])
-
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 #  WHITELIST COMMANDS
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 
-@bot.tree.command(name="whitelist_add", description="Fügt einen User zur Security-Whitelist hinzu", guild=discord.Object(id=ALLOWED_GUILD_ID))
+@bot.tree.command(
+    name="whitelist_add",
+    description="Add a user to the security whitelist",
+    guild=discord.Object(id=ALLOWED_GUILD_ID)
+)
 async def whitelist_add(interaction: discord.Interaction, member: discord.Member):
     if interaction.user.id not in OWNERS:
-        return await interaction.response.send_message("❌ Kein Zugriff", ephemeral=True)
+        return await interaction.response.send_message("No permission.", ephemeral=True)
     SECURITY_WHITELIST_USERS.add(member.id)
-    await interaction.response.send_message(f"✅ {member.mention} zur Whitelist hinzugefügt.", ephemeral=True)
+    await interaction.response.send_message(f"{member.mention} added to whitelist.", ephemeral=True)
 
 
-@bot.tree.command(name="whitelist_remove", description="Entfernt einen User von der Security-Whitelist", guild=discord.Object(id=ALLOWED_GUILD_ID))
+@bot.tree.command(
+    name="whitelist_remove",
+    description="Remove a user from the security whitelist",
+    guild=discord.Object(id=ALLOWED_GUILD_ID)
+)
 async def whitelist_remove(interaction: discord.Interaction, member: discord.Member):
     if interaction.user.id not in OWNERS:
-        return await interaction.response.send_message("❌ Kein Zugriff", ephemeral=True)
+        return await interaction.response.send_message("No permission.", ephemeral=True)
     SECURITY_WHITELIST_USERS.discard(member.id)
-    await interaction.response.send_message(f"✅ {member.mention} von der Whitelist entfernt.", ephemeral=True)
+    await interaction.response.send_message(f"{member.mention} removed from whitelist.", ephemeral=True)
 
 
-@bot.tree.command(name="whitelist_list", description="Zeigt alle gewhitelisteten User", guild=discord.Object(id=ALLOWED_GUILD_ID))
+@bot.tree.command(
+    name="whitelist_list",
+    description="Show all whitelisted users",
+    guild=discord.Object(id=ALLOWED_GUILD_ID)
+)
 async def whitelist_list(interaction: discord.Interaction):
     if interaction.user.id not in OWNERS:
-        return await interaction.response.send_message("❌ Kein Zugriff", ephemeral=True)
+        return await interaction.response.send_message("No permission.", ephemeral=True)
     if not SECURITY_WHITELIST_USERS:
-        return await interaction.response.send_message("📋 Whitelist ist leer.", ephemeral=True)
+        return await interaction.response.send_message("Whitelist is empty.", ephemeral=True)
     names = []
     for uid in SECURITY_WHITELIST_USERS:
         u = bot.get_user(uid)
-        names.append(f"• {u} (`{uid}`)" if u else f"• Unbekannt (`{uid}`)")
-    await interaction.response.send_message("📋 **Whitelist:**\n" + "\n".join(names), ephemeral=True)
+        names.append(f"{u} (`{uid}`)" if u else f"Unknown (`{uid}`)")
+    await interaction.response.send_message("**Whitelist:**\n" + "\n".join(names), ephemeral=True)
 
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 #  LOCKDOWN
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 
-@bot.tree.command(name="lockdown", description="Sperrt oder entsperrt einen Kanal", guild=discord.Object(id=ALLOWED_GUILD_ID))
+@bot.tree.command(
+    name="lockdown",
+    description="Lock or unlock a channel",
+    guild=discord.Object(id=ALLOWED_GUILD_ID)
+)
 async def lockdown(interaction: discord.Interaction, channel: discord.TextChannel = None):
     if interaction.user.id not in OWNERS:
-        return await interaction.response.send_message("❌ Kein Zugriff", ephemeral=True)
+        return await interaction.response.send_message("No permission.", ephemeral=True)
     target    = channel or interaction.channel
     overwrite = target.overwrites_for(interaction.guild.default_role)
 
     if overwrite.send_messages is False:
         overwrite.send_messages = None
         await target.set_permissions(interaction.guild.default_role, overwrite=overwrite)
-        await interaction.response.send_message(f"🔓 {target.mention} entsperrt.", ephemeral=True)
-        await target.send("🔓 Dieser Kanal wurde entsperrt.")
-        await security_log(interaction.guild, "Lockdown aufgehoben",
-            f"{interaction.user.mention} hat {target.mention} entsperrt.",
+        await interaction.response.send_message(f"{target.mention} unlocked.", ephemeral=True)
+        await target.send("This channel has been unlocked.")
+        await mod_log(interaction.guild, "Lockdown Lifted",
+            f"{interaction.user.mention} unlocked {target.mention}.",
             color=discord.Color.green(),
-            fields=[("User", f"{interaction.user} ({interaction.user.id})"), ("Kanal", target.mention)])
+            fields=[("User", f"{interaction.user} ({interaction.user.id})"), ("Channel", target.mention)])
     else:
         overwrite.send_messages = False
         await target.set_permissions(interaction.guild.default_role, overwrite=overwrite)
-        await interaction.response.send_message(f"🔒 {target.mention} gesperrt.", ephemeral=True)
-        await target.send("🔒 Dieser Kanal wurde vorübergehend gesperrt.")
-        await security_log(interaction.guild, "Lockdown aktiviert",
-            f"{interaction.user.mention} hat {target.mention} gesperrt.",
+        await interaction.response.send_message(f"{target.mention} locked.", ephemeral=True)
+        await target.send("This channel has been temporarily locked.")
+        await mod_log(interaction.guild, "Lockdown Active",
+            f"{interaction.user.mention} locked {target.mention}.",
             color=discord.Color.red(),
-            fields=[("User", f"{interaction.user} ({interaction.user.id})"), ("Kanal", target.mention)])
+            fields=[("User", f"{interaction.user} ({interaction.user.id})"), ("Channel", target.mention)])
 
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 #  /SEND
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 
-@bot.tree.command(name="send", description="Sendet eine Nachricht in einen Kanal", guild=discord.Object(id=ALLOWED_GUILD_ID))
-async def send_cmd(interaction: discord.Interaction, channel: discord.TextChannel, message: str, embed: bool = True, color: str = "black"):
+@bot.tree.command(
+    name="send",
+    description="Send a message to a channel",
+    guild=discord.Object(id=ALLOWED_GUILD_ID)
+)
+async def send_cmd(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel,
+    message: str,
+    embed: bool = True,
+    color: str = "black",
+):
     if interaction.user.id not in OWNERS:
-        return await interaction.response.send_message("❌ Kein Zugriff", ephemeral=True)
+        return await interaction.response.send_message("No permission.", ephemeral=True)
     try:
         if embed:
             emb = discord.Embed(description=message, color=get_color(color))
             await channel.send(embed=emb)
         else:
             await channel.send(message)
-        await interaction.response.send_message("✅ Gesendet", ephemeral=True)
+        await interaction.response.send_message("Sent.", ephemeral=True)
     except Exception as e:
-        await interaction.response.send_message(f"❌ Fehler: {e}", ephemeral=True)
+        await interaction.response.send_message(f"Error: {e}", ephemeral=True)
 
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 #  HELP COMMAND
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 
 @bot.command(name="help")
 async def help_cmd(ctx: commands.Context):
     if ctx.guild.id != ALLOWED_GUILD_ID:
         return
     embed = discord.Embed(
-        title="📖 Bot Hilfe",
+        title="Command Overview",
         color=discord.Color.from_rgb(149, 165, 166),
         timestamp=datetime.utcnow(),
     )
-    embed.add_field(name="🛡️ Moderation", value=(
-        "`?kick @user [Grund]`\n"
-        "`?ban @user [Grund]`\n"
-        "`?unban <ID> [Grund]`\n"
-        "`?timeout @user <Zeit> [Grund]` – Einheiten: s m h d\n"
-        "`?purge <Anzahl|all>`"
+    embed.add_field(name="Moderation", value=(
+        "`?kick @user [reason]`\n"
+        "`?ban @user [reason]`\n"
+        "`?unban <ID> [reason]`\n"
+        "`?timeout @user <time> [reason]` — s m h d\n"
+        "`?purge <amount|all>`"
     ), inline=False)
-    embed.add_field(name="⚠️ Warns", value=(
-        "`?warn @user [Grund]`\n"
+    embed.add_field(name="Warnings", value=(
+        "`?warn @user [reason]`\n"
         "`?warns @user`\n"
         "`?clearwarn <ID>`\n"
         "`?clearwarns @user`"
     ), inline=False)
-    embed.add_field(name="🎭 Rollen", value=(
-        "`?role @user <Name oder ID>`"
+    embed.add_field(name="Roles", value="`?role @user <name or ID>`", inline=False)
+    embed.add_field(name="Tickets", value=(
+        "`?close` — Close ticket\n"
+        "`?delete` — Save transcript & delete"
     ), inline=False)
-    embed.add_field(name="🎟️ Tickets", value=(
-        "`?close` – Ticket schließen\n"
-        "`?delete` – Transcript + Ticket löschen"
-    ), inline=False)
-    embed.add_field(name="ℹ️ Info", value=(
+    embed.add_field(name="Info", value=(
         "`/userinfo [@user]`\n"
         "`/serverinfo`\n"
         "`/avatar [@user]`"
     ), inline=False)
-    embed.add_field(name="📨 Invites", value=(
+    embed.add_field(name="Invites", value=(
         "`/invite @user`\n"
         "`/leaderboard`\n"
-        "`/invites_set @user <Anzahl>`"
+        "`/invites_set @user <amount>`"
     ), inline=False)
-    embed.add_field(name="🔧 Owner Only", value=(
-        "`?setcount <Zahl>`\n"
+    embed.add_field(name="Owner Only", value=(
+        "`?setcount <number>`\n"
         "`?call`\n"
         "`/send`\n"
-        "`/lockdown [#kanal]`\n"
+        "`/lockdown [#channel]`\n"
         "`/ticketpanel`\n"
-        "`/whitelist_add/remove/list`"
+        "`/whitelist_add|remove|list`"
     ), inline=False)
-    embed.set_footer(text=f"Angefragt von {ctx.author}")
+    embed.set_footer(text=f"Requested by {ctx.author}")
     await ctx.send(embed=embed)
 
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 #  !CALL
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 
 @bot.command()
 async def call(ctx: commands.Context):
@@ -1789,12 +2012,12 @@ async def call(ctx: commands.Context):
             await vc.move_to(channel)
         else:
             await channel.connect()
-        await ctx.send("✅ Connected", delete_after=3)
+        await ctx.send("Connected.", delete_after=3)
     except Exception as e:
-        await ctx.send(f"❌ Fehler: {e}")
+        await ctx.send(f"Error: {e}")
 
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 #  START
-# ═══════════════════════════════════════════════════════════
+# ================================================================
 
 bot.run(TOKEN)
