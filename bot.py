@@ -456,28 +456,69 @@ async def on_member_join(member: discord.Member):
         )
         invite_cache[member.guild.id] = {inv.code: inv.uses for inv in new_invites}
 
-        if used_invite and used_invite.inviter:
+        invite_ch = member.guild.get_channel(INVITE_CHANNEL_ID)
+        if not invite_ch:
+            return
+
+        # Vanity URL join — no normal invite matched
+        if used_invite is None:
+            vanity_code = None
+            try:
+                vanity = await member.guild.vanity_invite()
+                if vanity:
+                    vanity_code = vanity.code
+            except Exception:
+                pass
+
+            embed = discord.Embed(
+                title=member.guild.name,
+                description=(
+                    f"{member.mention} ist beigetreten.\n"
+                    f"Eingeladen über **Vanity URL**"
+                    + (f" (`/{vanity_code}`)" if vanity_code else "")
+                ),
+                color=discord.Color.from_rgb(149, 165, 166),
+                timestamp=datetime.utcnow(),
+            )
+            embed.set_thumbnail(url=member.display_avatar.url)
+            embed.set_footer(text="Vanity Invite")
+            await invite_ch.send(embed=embed)
+
+        elif used_invite.inviter:
             inviter = used_invite.inviter
             _add_invite(member.guild.id, inviter.id, 1)
             total, left, fake = _get_invites(member.guild.id, inviter.id)
             real = total - left - fake
 
-            invite_ch = member.guild.get_channel(INVITE_CHANNEL_ID)
-            if invite_ch:
-                embed = discord.Embed(
-                    title=member.guild.name,
-                    description=(
-                        f"{member.mention} ist beigetreten. "
-                        f"Eingeladen von **{inviter.mention}** – "
-                        f"jetzt **{real} Invites**!\n"
-                        f"({total} gesamt · {left} left · {fake} fake)"
-                    ),
-                    color=discord.Color.from_rgb(149, 165, 166),
-                    timestamp=datetime.utcnow(),
-                )
-                embed.set_thumbnail(url=member.display_avatar.url)
-                embed.set_footer(text=f"Invite code: {used_invite.code}")
-                await invite_ch.send(embed=embed)
+            embed = discord.Embed(
+                title=member.guild.name,
+                description=(
+                    f"{member.mention} ist beigetreten.\n"
+                    f"Eingeladen von **{inviter.name}** ({inviter.mention}) \u2013 "
+                    f"jetzt **{real} Invites**\n"
+                    f"({total} gesamt \u00b7 {left} left \u00b7 {fake} fake)"
+                ),
+                color=discord.Color.from_rgb(149, 165, 166),
+                timestamp=datetime.utcnow(),
+            )
+            embed.set_thumbnail(url=member.display_avatar.url)
+            embed.set_footer(text=f"Invite code: {used_invite.code}")
+            await invite_ch.send(embed=embed)
+
+        else:
+            embed = discord.Embed(
+                title=member.guild.name,
+                description=(
+                    f"{member.mention} ist beigetreten.\n"
+                    f"Einladender konnte nicht ermittelt werden."
+                ),
+                color=discord.Color.from_rgb(149, 165, 166),
+                timestamp=datetime.utcnow(),
+            )
+            embed.set_thumbnail(url=member.display_avatar.url)
+            embed.set_footer(text=f"Invite code: {used_invite.code}")
+            await invite_ch.send(embed=embed)
+
     except Exception:
         pass
 
