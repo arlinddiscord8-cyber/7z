@@ -1927,16 +1927,15 @@ async def help_cmd(ctx: commands.Context):
         "`/invites_set @user <amount>`"
     ), inline=False)
     embed.add_field(name="Utility", value=(
-        "`?say #channel <text>`\n"
-        "`/reminder <time> <text>` — Units: s m h d\n"
-        "`?alts [days]` — Show new accounts"
+        "`/say #channel <text>`\n"
+        "`/alts [days]` — Show new accounts"
     ), inline=False)
     embed.add_field(name="Tickets", value=(
         "`?close` — Close ticket\n"
         "`?delete` — Save transcript & delete\n"
-        "`?adduser @user` — Add user to ticket\n"
-        "`?removeuser @user` — Remove user from ticket\n"
-        "`?renameticket <name>` — Rename ticket"
+        "`/adduser @user` — Add user to ticket\n"
+        "`/removeuser @user` — Remove user from ticket\n"
+        "`/renameticket <name>` — Rename ticket"
     ), inline=False)
     embed.add_field(name="Owner Only", value=(
         "`?setcount <number>`\n"
@@ -1969,95 +1968,47 @@ async def call(ctx: commands.Context):
 
 
 # ================================================================
-#  ?SAY
-# ================================================================
-
-@bot.command(name="say")
-async def say_cmd(ctx: commands.Context, channel: discord.TextChannel = None, *, text: str = None):
-    if ctx.guild.id != ALLOWED_GUILD_ID:
-        return
-    if not is_owner(ctx.author.id):
-        return await _reply_and_clean(ctx, "No permission.")
-    if channel is None or text is None:
-        return await _reply_and_clean(ctx, "Usage: `?say #channel <text>`")
-    try:
-        await ctx.message.delete()
-    except Exception:
-        pass
-    try:
-        await channel.send(text)
-    except discord.Forbidden:
-        await ctx.send("Missing permissions for that channel.", delete_after=4)
-    except Exception as e:
-        await ctx.send(f"Error: {e}", delete_after=4)
-
-# ================================================================
-#  /REMINDER
+#  SLASH COMMANDS — SAY / ALTS / TICKET TOOLS
 # ================================================================
 
 @bot.tree.command(
-    name="reminder",
-    description="Set a reminder",
+    name="say",
+    description="Send a message as the bot",
     guild=discord.Object(id=ALLOWED_GUILD_ID)
 )
-async def reminder_cmd(interaction: discord.Interaction, time: str, *, text: str):
-    units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-    unit  = time[-1].lower()
-    if unit not in units or not time[:-1].isdigit():
-        return await interaction.response.send_message(
-            "Invalid time. Example: `10m`, `2h`, `1d`", ephemeral=True
-        )
-    seconds = int(time[:-1]) * units[unit]
-    if seconds > 604800:
-        return await interaction.response.send_message(
-            "Maximum reminder time is 7 days.", ephemeral=True
-        )
-
-    until_ts = int((datetime.utcnow() + timedelta(seconds=seconds)).timestamp())
-    await interaction.response.send_message(
-        f"Got it. I will remind you <t:{until_ts}:R>.", ephemeral=True
-    )
-
-    await asyncio.sleep(seconds)
+async def say_cmd(interaction: discord.Interaction, channel: discord.TextChannel, text: str):
+    if interaction.user.id not in OWNERS:
+        return await interaction.response.send_message("No permission.", ephemeral=True)
     try:
-        embed = discord.Embed(
-            title="Reminder",
-            description=text,
-            color=discord.Color.from_rgb(149, 165, 166),
-            timestamp=datetime.utcnow(),
-        )
-        embed.set_footer(text=f"Set by {interaction.user}")
-        await interaction.user.send(embed=embed)
-    except Exception:
-        # DMs closed — try channel
-        try:
-            await interaction.channel.send(
-                f"{interaction.user.mention} Reminder: {text}"
-            )
-        except Exception:
-            pass
+        await channel.send(text)
+        await interaction.response.send_message("Sent.", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.response.send_message("Missing permissions for that channel.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"Error: {e}", ephemeral=True)
 
-# ================================================================
-#  ?ALTS
-# ================================================================
 
-@bot.command(name="alts")
-async def alts_cmd(ctx: commands.Context, days: int = 7):
-    if ctx.guild.id != ALLOWED_GUILD_ID:
-        return
-    if not can_moderate(ctx.author):
-        return await _reply_and_clean(ctx, "Insufficient permissions.")
+@bot.tree.command(
+    name="alts",
+    description="Show accounts younger than X days",
+    guild=discord.Object(id=ALLOWED_GUILD_ID)
+)
+async def alts_cmd(interaction: discord.Interaction, days: int = 7):
+    if not can_moderate(interaction.user):
+        return await interaction.response.send_message("Insufficient permissions.", ephemeral=True)
     if days < 1 or days > 365:
-        return await _reply_and_clean(ctx, "Days must be between 1 and 365.")
+        return await interaction.response.send_message("Days must be between 1 and 365.", ephemeral=True)
 
-    now   = datetime.utcnow()
-    alts  = [
-        m for m in ctx.guild.members
+    now  = datetime.utcnow()
+    alts = [
+        m for m in interaction.guild.members
         if not m.bot and (now - m.created_at.replace(tzinfo=None)) < timedelta(days=days)
     ]
 
     if not alts:
-        return await ctx.send(f"No accounts younger than {days} days found.", delete_after=8)
+        return await interaction.response.send_message(
+            f"No accounts younger than {days} days found.", ephemeral=True
+        )
 
     embed = discord.Embed(
         title=f"Accounts younger than {days} days",
@@ -2069,84 +2020,70 @@ async def alts_cmd(ctx: commands.Context, days: int = 7):
     lines = []
     for m in sorted(alts, key=lambda x: x.created_at, reverse=True)[:20]:
         age_days = (now - m.created_at.replace(tzinfo=None)).days
-        lines.append(f"{m.mention} — created {age_days}d ago (<t:{int(m.created_at.timestamp())}:R>)")
+        lines.append(f"{m.mention} — {age_days}d old (<t:{int(m.created_at.timestamp())}:R>)")
 
     embed.description = "\n".join(lines)
     if len(alts) > 20:
         embed.description += f"\n*...and {len(alts) - 20} more*"
-    await ctx.send(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
-# ================================================================
-#  TICKET — ADDUSER / REMOVEUSER / RENAME
-# ================================================================
 
-@bot.command(name="adduser")
-async def adduser_cmd(ctx: commands.Context, member: discord.Member = None):
-    if ctx.guild.id != ALLOWED_GUILD_ID or not is_ticket_channel(ctx.channel):
-        return
-    if not can_manage_ticket(ctx.author):
-        return await ctx.send("No permission.", delete_after=4)
-    if member is None:
-        return await ctx.send("Usage: `?adduser @user`", delete_after=4)
+@bot.tree.command(
+    name="adduser",
+    description="Add a user to the current ticket",
+    guild=discord.Object(id=ALLOWED_GUILD_ID)
+)
+async def adduser_cmd(interaction: discord.Interaction, member: discord.Member):
+    if not is_ticket_channel(interaction.channel):
+        return await interaction.response.send_message("This is not a ticket channel.", ephemeral=True)
+    if not can_manage_ticket(interaction.user):
+        return await interaction.response.send_message("No permission.", ephemeral=True)
     try:
-        await ctx.channel.set_permissions(
-            member,
-            read_messages=True,
-            send_messages=True,
-        )
-        try:
-            await ctx.message.delete()
-        except Exception:
-            pass
-        await ctx.send(f"{member.mention} has been added to the ticket.", delete_after=5)
+        await interaction.channel.set_permissions(member, read_messages=True, send_messages=True)
+        await interaction.response.send_message(f"{member.mention} has been added to the ticket.", ephemeral=False)
     except discord.Forbidden:
-        await ctx.send("Missing permissions.", delete_after=4)
+        await interaction.response.send_message("Missing permissions.", ephemeral=True)
     except Exception as e:
-        await ctx.send(f"Error: {e}", delete_after=4)
+        await interaction.response.send_message(f"Error: {e}", ephemeral=True)
 
 
-@bot.command(name="removeuser")
-async def removeuser_cmd(ctx: commands.Context, member: discord.Member = None):
-    if ctx.guild.id != ALLOWED_GUILD_ID or not is_ticket_channel(ctx.channel):
-        return
-    if not can_manage_ticket(ctx.author):
-        return await ctx.send("No permission.", delete_after=4)
-    if member is None:
-        return await ctx.send("Usage: `?removeuser @user`", delete_after=4)
+@bot.tree.command(
+    name="removeuser",
+    description="Remove a user from the current ticket",
+    guild=discord.Object(id=ALLOWED_GUILD_ID)
+)
+async def removeuser_cmd(interaction: discord.Interaction, member: discord.Member):
+    if not is_ticket_channel(interaction.channel):
+        return await interaction.response.send_message("This is not a ticket channel.", ephemeral=True)
+    if not can_manage_ticket(interaction.user):
+        return await interaction.response.send_message("No permission.", ephemeral=True)
     try:
-        await ctx.channel.set_permissions(member, overwrite=None)
-        try:
-            await ctx.message.delete()
-        except Exception:
-            pass
-        await ctx.send(f"{member.mention} has been removed from the ticket.", delete_after=5)
+        await interaction.channel.set_permissions(member, overwrite=None)
+        await interaction.response.send_message(f"{member.mention} has been removed from the ticket.", ephemeral=False)
     except discord.Forbidden:
-        await ctx.send("Missing permissions.", delete_after=4)
+        await interaction.response.send_message("Missing permissions.", ephemeral=True)
     except Exception as e:
-        await ctx.send(f"Error: {e}", delete_after=4)
+        await interaction.response.send_message(f"Error: {e}", ephemeral=True)
 
 
-@bot.command(name="renameticket")
-async def renameticket_cmd(ctx: commands.Context, *, name: str = None):
-    if ctx.guild.id != ALLOWED_GUILD_ID or not is_ticket_channel(ctx.channel):
-        return
-    if not can_manage_ticket(ctx.author):
-        return await ctx.send("No permission.", delete_after=4)
-    if name is None:
-        return await ctx.send("Usage: `?renameticket <name>`", delete_after=4)
-    # Sanitize name
+@bot.tree.command(
+    name="renameticket",
+    description="Rename the current ticket",
+    guild=discord.Object(id=ALLOWED_GUILD_ID)
+)
+async def renameticket_cmd(interaction: discord.Interaction, name: str):
+    if not is_ticket_channel(interaction.channel):
+        return await interaction.response.send_message("This is not a ticket channel.", ephemeral=True)
+    if not can_manage_ticket(interaction.user):
+        return await interaction.response.send_message("No permission.", ephemeral=True)
     name = name.lower().replace(" ", "-")[:50]
     try:
-        await ctx.channel.edit(name=f"ticket-{name}")
-        try:
-            await ctx.message.delete()
-        except Exception:
-            pass
-        await ctx.send(f"Ticket renamed to **ticket-{name}**.", delete_after=5)
+        await interaction.channel.edit(name=f"ticket-{name}")
+        await interaction.response.send_message(f"Ticket renamed to **ticket-{name}**.", ephemeral=False)
     except discord.Forbidden:
-        await ctx.send("Missing permissions.", delete_after=4)
+        await interaction.response.send_message("Missing permissions.", ephemeral=True)
     except Exception as e:
-        await ctx.send(f"Error: {e}", delete_after=4)
+        await interaction.response.send_message(f"Error: {e}", ephemeral=True)
 
 # ================================================================
 #  START
