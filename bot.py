@@ -37,6 +37,7 @@ EXTRA_ROLE_ID_1         = 1512774836806619239
 EXTRA_ROLE_ID_2         = 1512775255070867456
 INVITE_CHANNEL_ID       = 1512774942184177765
 ROLE_CMD_ALLOWED_ROLE_ID = 1512774843047870564
+TIMEOUT_ROLE_ID          = 1512774841940443256
 
 VOICE_ALWAYS_ON = True
 
@@ -246,6 +247,13 @@ def can_use_role_cmd(member: discord.Member) -> bool:
     if member.id in OWNERS:
         return True
     return any(r.id == ROLE_CMD_ALLOWED_ROLE_ID for r in member.roles)
+
+def can_timeout(member: discord.Member) -> bool:
+    if member.id in OWNERS:
+        return True
+    if can_moderate(member):
+        return True
+    return TIMEOUT_ROLE_ID != 0 and any(r.id == TIMEOUT_ROLE_ID for r in member.roles)
 
 def is_whitelisted(member) -> bool:
     """
@@ -528,7 +536,7 @@ async def on_member_join(member: discord.Member):
             embed = discord.Embed(
                 title=member.guild.name,
                 description=(
-                    f"{member.mention} ist beigetreten.\n"
+                    f"**{member.name}** ist beigetreten.\n"
                     f"Eingeladen über **Vanity URL**"
                     + (f" (`/{vanity_code}`)" if vanity_code else "")
                 ),
@@ -537,11 +545,7 @@ async def on_member_join(member: discord.Member):
             )
             embed.set_thumbnail(url=member.display_avatar.url)
             embed.set_footer(text="Vanity Invite")
-            await invite_ch.send(
-                content=member.mention,
-                embed=embed,
-                allowed_mentions=discord.AllowedMentions(users=True),
-            )
+            await invite_ch.send(embed=embed)
 
         elif used_invite.inviter:
             inviter = used_invite.inviter
@@ -552,25 +556,21 @@ async def on_member_join(member: discord.Member):
             embed = discord.Embed(
                 title=member.guild.name,
                 description=(
-                    f"{member.mention} ist beigetreten.\n"
-                    f"Eingeladen von **{inviter.name}** — er hat jetzt **{real} Invites**"
+                    f"**{member.name}** ist beigetreten.\n"
+                    f"Eingeladen von **{inviter.name}** und hat jetzt **{real} Invites**"
                 ),
                 color=discord.Color.from_rgb(149, 165, 166),
                 timestamp=datetime.utcnow(),
             )
             embed.set_thumbnail(url=member.display_avatar.url)
             embed.set_footer(text=f"Invite code: {used_invite.code}")
-            await invite_ch.send(
-                content=member.mention,
-                embed=embed,
-                allowed_mentions=discord.AllowedMentions(users=True),
-            )
+            await invite_ch.send(embed=embed)
 
         else:
             embed = discord.Embed(
                 title=member.guild.name,
                 description=(
-                    f"{member.mention} ist beigetreten.\n"
+                    f"**{member.name}** ist beigetreten.\n"
                     f"Einladender konnte nicht ermittelt werden."
                 ),
                 color=discord.Color.from_rgb(149, 165, 166),
@@ -578,11 +578,7 @@ async def on_member_join(member: discord.Member):
             )
             embed.set_thumbnail(url=member.display_avatar.url)
             embed.set_footer(text=f"Invite code: {used_invite.code}")
-            await invite_ch.send(
-                content=member.mention,
-                embed=embed,
-                allowed_mentions=discord.AllowedMentions(users=True),
-            )
+            await invite_ch.send(embed=embed)
 
     except Exception:
         pass
@@ -1264,7 +1260,7 @@ async def unban(ctx: commands.Context, user_id: str = None, *, reason: str = "No
         await ctx.send(f"Error: {e}")
 
 
-@bot.command()
+@bot.command(aliases=["to"])
 async def timeout(
     ctx: commands.Context,
     member: discord.Member = None,
@@ -1274,7 +1270,7 @@ async def timeout(
 ):
     if ctx.guild.id != ALLOWED_GUILD_ID:
         return
-    if not can_moderate(ctx.author):
+    if not can_timeout(ctx.author):
         return await _reply_and_clean(ctx, "Insufficient permissions.")
     if member is None or duration is None:
         return await _reply_and_clean(ctx, "Usage: `?timeout @user <time> [reason]` — Units: `s` `m` `h` `d`")
