@@ -7,7 +7,6 @@ from datetime import datetime, timedelta
 import asyncio
 import os
 import re
-import io
 
 TOKEN = os.getenv("TOKEN")
 
@@ -359,6 +358,7 @@ async def _reply_and_clean(ctx, text: str, delay: float = 4.0):
 async def setup_hook():
     bot.add_view(TicketButton())
     bot.add_view(TicketCloseView())
+    bot.add_view(TicketDeleteView())
 
 bot.setup_hook = setup_hook
 
@@ -513,10 +513,10 @@ async def on_member_join(member: discord.Member):
 
         invite_ch = member.guild.get_channel(INVITE_CHANNEL_ID)
         if not invite_ch:
-            pass  # no invite channel configured, skip logging
+            pass  # no invite channel configured
 
-        # Vanity URL join — no normal invite matched
-        if used_invite is None:
+        elif used_invite is None:
+            # Vanity URL join
             vanity_code = None
             try:
                 vanity = await member.guild.vanity_invite()
@@ -528,7 +528,7 @@ async def on_member_join(member: discord.Member):
             embed = discord.Embed(
                 title=member.guild.name,
                 description=(
-                    f"**{member.name}** ist beigetreten.\n"
+                    f"{member.mention} ist beigetreten.\n"
                     f"Eingeladen über **Vanity URL**"
                     + (f" (`/{vanity_code}`)" if vanity_code else "")
                 ),
@@ -537,30 +537,40 @@ async def on_member_join(member: discord.Member):
             )
             embed.set_thumbnail(url=member.display_avatar.url)
             embed.set_footer(text="Vanity Invite")
-            await invite_ch.send(embed=embed)
+            await invite_ch.send(
+                content=member.mention,
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(users=True),
+            )
 
         elif used_invite.inviter:
             inviter = used_invite.inviter
             _add_invite(member.guild.id, inviter.id, 1)
+            total, left, fake = _get_invites(member.guild.id, inviter.id)
+            real = total - left - fake
 
             embed = discord.Embed(
                 title=member.guild.name,
                 description=(
-                    f"**{member.name}** ist beigetreten.\n"
-                    f"Eingeladen von **{inviter.name}**"
+                    f"{member.mention} ist beigetreten.\n"
+                    f"Eingeladen von **{inviter.name}** — er hat jetzt **{real} Invites**"
                 ),
                 color=discord.Color.from_rgb(149, 165, 166),
                 timestamp=datetime.utcnow(),
             )
             embed.set_thumbnail(url=member.display_avatar.url)
             embed.set_footer(text=f"Invite code: {used_invite.code}")
-            await invite_ch.send(embed=embed)
+            await invite_ch.send(
+                content=member.mention,
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(users=True),
+            )
 
         else:
             embed = discord.Embed(
                 title=member.guild.name,
                 description=(
-                    f"**{member.name}** ist beigetreten.\n"
+                    f"{member.mention} ist beigetreten.\n"
                     f"Einladender konnte nicht ermittelt werden."
                 ),
                 color=discord.Color.from_rgb(149, 165, 166),
@@ -568,7 +578,11 @@ async def on_member_join(member: discord.Member):
             )
             embed.set_thumbnail(url=member.display_avatar.url)
             embed.set_footer(text=f"Invite code: {used_invite.code}")
-            await invite_ch.send(embed=embed)
+            await invite_ch.send(
+                content=member.mention,
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(users=True),
+            )
 
     except Exception:
         pass
@@ -983,15 +997,7 @@ def can_manage_ticket(member: discord.Member) -> bool:
         return True
     return any(r.id == SUPPORT_ROLE_ID or r.permissions.administrator for r in member.roles)
 
-async def _generate_transcript(channel: discord.TextChannel) -> discord.File:
-    lines = [f"Transcript — #{channel.name}", f"Exported: {datetime.utcnow().strftime('%d.%m.%Y %H:%M')} UTC", ""]
-    async for msg in channel.history(limit=500, oldest_first=True):
-        ts = msg.created_at.strftime("%d.%m.%Y %H:%M")
-        lines.append(f"[{ts}] {msg.author} ({msg.author.id}): {msg.content}")
-        for att in msg.attachments:
-            lines.append(f"[{ts}] {msg.author}: [Attachment: {att.url}]")
-    content = "\n".join(lines).encode("utf-8")
-    return discord.File(io.BytesIO(content), filename=f"transcript-{channel.name}.txt")
+# transcript removed
 
 
 class TicketCloseView(View):
@@ -1002,35 +1008,49 @@ class TicketCloseView(View):
     async def close_btn(self, interaction: discord.Interaction, button: Button):
         if not can_manage_ticket(interaction.user):
             return await interaction.response.send_message("No permission.", ephemeral=True)
-        await interaction.response.send_message("Ticket is being closed...")
+        await interaction.response.defer()
         try:
+            # Lock ticket — only support role can still write
+            support_role = interaction.guild.get_role(SUPPORT_ROLE_ID)
             await interaction.channel.set_permissions(
                 interaction.guild.default_role,
                 read_messages=False,
                 send_messages=False,
             )
+            if support_role:
+                await interaction.channel.set_permissions(
+                    support_role,
+                    read_messages=True,
+                    send_messages=True,
+                )
+            embed = discord.Embed(
+                description="This ticket has been closed. Only support staff can still write here.",
+                color=discord.Color.red(),
+                timestamp=datetime.utcnow(),
+            )
+            await interaction.channel.send(embed=embed, view=TicketDeleteView())
         except Exception as e:
-            await interaction.channel.send(f"Error: {e}")
+            await interaction.followup.send(f"Error: {e}", ephemeral=True)
 
-    @discord.ui.button(label="Save & Delete", style=discord.ButtonStyle.gray, custom_id="ticket_delete_btn")
+
+class TicketDeleteView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Delete Ticket", style=discord.ButtonStyle.gray, custom_id="ticket_delete_btn")
     async def delete_btn(self, interaction: discord.Interaction, button: Button):
         if not can_manage_ticket(interaction.user):
             return await interaction.response.send_message("No permission.", ephemeral=True)
-        await interaction.response.send_message("Generating transcript and deleting ticket...")
+        await interaction.response.defer()
         try:
-            transcript = await _generate_transcript(interaction.channel)
-            log_ch = interaction.guild.get_channel(LOG_CHANNEL_ID)
-            if log_ch:
-                embed = discord.Embed(
-                    title="Ticket Closed",
-                    description=f"**Channel:** {interaction.channel.name}\n**Closed by:** {interaction.user.mention}",
-                    color=discord.Color.from_rgb(149, 165, 166),
-                    timestamp=datetime.utcnow(),
-                )
-                await log_ch.send(embed=embed, file=transcript)
+            embed = discord.Embed(
+                description="This ticket will be deleted.",
+                color=discord.Color.dark_gray(),
+            )
+            await interaction.channel.send(embed=embed)
         except Exception:
             pass
-        await asyncio.sleep(2)
+        await asyncio.sleep(1)
         try:
             await interaction.channel.delete(reason=f"Ticket deleted by {interaction.user}")
         except Exception:
@@ -1122,9 +1142,21 @@ async def close(ctx: commands.Context):
         return
     if not can_manage_ticket(ctx.author):
         return await ctx.send("No permission.")
-    await ctx.send("Closing ticket...")
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    support_role = ctx.guild.get_role(SUPPORT_ROLE_ID)
     try:
         await ctx.channel.set_permissions(ctx.guild.default_role, read_messages=False, send_messages=False)
+        if support_role:
+            await ctx.channel.set_permissions(support_role, read_messages=True, send_messages=True)
+        embed = discord.Embed(
+            description="This ticket has been closed. Only support staff can still write here.",
+            color=discord.Color.red(),
+            timestamp=datetime.utcnow(),
+        )
+        await ctx.send(embed=embed, view=TicketDeleteView())
     except Exception as e:
         await ctx.send(f"Error: {e}")
 
@@ -1135,28 +1167,16 @@ async def delete_ticket(ctx: commands.Context):
         return
     if not can_manage_ticket(ctx.author):
         return await ctx.send("No permission.")
-
-    if ctx.author.id not in OWNERS:
-        now = datetime.utcnow()
-        ticket_del_tracker[ctx.author.id] = [
-            t for t in ticket_del_tracker[ctx.author.id]
-            if now - t < timedelta(seconds=30)
-        ]
-        if len(ticket_del_tracker[ctx.author.id]) >= 3:
-            return await ctx.send("Maximum 3 ticket deletions per 30 seconds.", delete_after=5)
-        ticket_del_tracker[ctx.author.id].append(now)
-
     try:
-        transcript = await _generate_transcript(ctx.channel)
-        log_ch = ctx.guild.get_channel(LOG_CHANNEL_ID)
-        if log_ch:
-            embed = discord.Embed(
-                title="Ticket Closed",
-                description=f"**Channel:** {ctx.channel.name}\n**Closed by:** {ctx.author.mention}",
-                color=discord.Color.from_rgb(149, 165, 166),
-                timestamp=datetime.utcnow(),
-            )
-            await log_ch.send(embed=embed, file=transcript)
+        await ctx.message.delete()
+    except Exception:
+        pass
+    try:
+        embed = discord.Embed(
+            description="This ticket will be deleted.",
+            color=discord.Color.dark_gray(),
+        )
+        await ctx.send(embed=embed)
     except Exception:
         pass
     await asyncio.sleep(1)
