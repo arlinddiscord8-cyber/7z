@@ -536,7 +536,7 @@ async def on_member_join(member: discord.Member):
             embed = discord.Embed(
                 title=member.guild.name,
                 description=(
-                    f"**{member.name}** ist beigetreten.\n"
+                    f"{member.mention} ist beigetreten.\n"
                     f"Eingeladen über **Vanity URL**"
                     + (f" (`/{vanity_code}`)" if vanity_code else "")
                 ),
@@ -545,7 +545,7 @@ async def on_member_join(member: discord.Member):
             )
             embed.set_thumbnail(url=member.display_avatar.url)
             embed.set_footer(text="Vanity Invite")
-            await invite_ch.send(embed=embed)
+            await invite_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions(users=True))
 
         elif used_invite.inviter:
             inviter = used_invite.inviter
@@ -556,7 +556,7 @@ async def on_member_join(member: discord.Member):
             embed = discord.Embed(
                 title=member.guild.name,
                 description=(
-                    f"**{member.name}** ist beigetreten.\n"
+                    f"{member.mention} ist beigetreten.\n"
                     f"Eingeladen von **{inviter.name}** und hat jetzt **{real} Invites**"
                 ),
                 color=discord.Color.from_rgb(149, 165, 166),
@@ -564,13 +564,13 @@ async def on_member_join(member: discord.Member):
             )
             embed.set_thumbnail(url=member.display_avatar.url)
             embed.set_footer(text=f"Invite code: {used_invite.code}")
-            await invite_ch.send(embed=embed)
+            await invite_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions(users=True))
 
         else:
             embed = discord.Embed(
                 title=member.guild.name,
                 description=(
-                    f"**{member.name}** ist beigetreten.\n"
+                    f"{member.mention} ist beigetreten.\n"
                     f"Einladender konnte nicht ermittelt werden."
                 ),
                 color=discord.Color.from_rgb(149, 165, 166),
@@ -578,7 +578,7 @@ async def on_member_join(member: discord.Member):
             )
             embed.set_thumbnail(url=member.display_avatar.url)
             embed.set_footer(text=f"Invite code: {used_invite.code}")
-            await invite_ch.send(embed=embed)
+            await invite_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions(users=True))
 
     except Exception:
         pass
@@ -997,16 +997,16 @@ def can_manage_ticket(member: discord.Member) -> bool:
 
 
 class TicketCloseView(View):
+    """Initial view shown when ticket is created — Close + Delete buttons."""
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Close Ticket", style=discord.ButtonStyle.red, custom_id="ticket_close_btn")
+    @discord.ui.button(label="Close", style=discord.ButtonStyle.gray, custom_id="ticket_close_btn")
     async def close_btn(self, interaction: discord.Interaction, button: Button):
         if not can_manage_ticket(interaction.user):
             return await interaction.response.send_message("No permission.", ephemeral=True)
         await interaction.response.defer()
         try:
-            # Lock ticket — only support role can still write
             support_role = interaction.guild.get_role(SUPPORT_ROLE_ID)
             await interaction.channel.set_permissions(
                 interaction.guild.default_role,
@@ -1019,31 +1019,40 @@ class TicketCloseView(View):
                     read_messages=True,
                     send_messages=True,
                 )
-            embed = discord.Embed(
-                description="This ticket has been closed. Only support staff can still write here.",
-                color=discord.Color.red(),
-                timestamp=datetime.utcnow(),
+            await interaction.channel.send(
+                "This ticket has been closed. Only support staff can still write here."
             )
-            await interaction.channel.send(embed=embed, view=TicketDeleteView())
         except Exception as e:
             await interaction.followup.send(f"Error: {e}", ephemeral=True)
 
-
-class TicketDeleteView(View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="Delete Ticket", style=discord.ButtonStyle.gray, custom_id="ticket_delete_btn")
+    @discord.ui.button(label="Delete", style=discord.ButtonStyle.gray, custom_id="ticket_delete_btn")
     async def delete_btn(self, interaction: discord.Interaction, button: Button):
         if not can_manage_ticket(interaction.user):
             return await interaction.response.send_message("No permission.", ephemeral=True)
         await interaction.response.defer()
         try:
-            embed = discord.Embed(
-                description="This ticket will be deleted.",
-                color=discord.Color.dark_gray(),
-            )
-            await interaction.channel.send(embed=embed)
+            await interaction.channel.send("This ticket will be deleted.")
+        except Exception:
+            pass
+        await asyncio.sleep(1)
+        try:
+            await interaction.channel.delete(reason=f"Ticket deleted by {interaction.user}")
+        except Exception:
+            pass
+
+
+class TicketDeleteView(View):
+    """Kept for backwards compatibility with old persistent buttons."""
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Delete", style=discord.ButtonStyle.gray, custom_id="ticket_delete_btn_v2")
+    async def delete_btn(self, interaction: discord.Interaction, button: Button):
+        if not can_manage_ticket(interaction.user):
+            return await interaction.response.send_message("No permission.", ephemeral=True)
+        await interaction.response.defer()
+        try:
+            await interaction.channel.send("This ticket will be deleted.")
         except Exception:
             pass
         await asyncio.sleep(1)
@@ -1147,12 +1156,7 @@ async def close(ctx: commands.Context):
         await ctx.channel.set_permissions(ctx.guild.default_role, read_messages=False, send_messages=False)
         if support_role:
             await ctx.channel.set_permissions(support_role, read_messages=True, send_messages=True)
-        embed = discord.Embed(
-            description="This ticket has been closed. Only support staff can still write here.",
-            color=discord.Color.red(),
-            timestamp=datetime.utcnow(),
-        )
-        await ctx.send(embed=embed, view=TicketDeleteView())
+        await ctx.send("This ticket has been closed. Only support staff can still write here.")
     except Exception as e:
         await ctx.send(f"Error: {e}")
 
@@ -1168,11 +1172,7 @@ async def delete_ticket(ctx: commands.Context):
     except Exception:
         pass
     try:
-        embed = discord.Embed(
-            description="This ticket will be deleted.",
-            color=discord.Color.dark_gray(),
-        )
-        await ctx.send(embed=embed)
+        await ctx.send("This ticket will be deleted.")
     except Exception:
         pass
     await asyncio.sleep(1)
