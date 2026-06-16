@@ -24,7 +24,7 @@ OWNERS = {
 CALL_VOICE_CHANNEL_ID   = 1516453482230583458
 LOG_CHANNEL_ID          = 1516453487322595409
 WELCOME_CHANNEL_ID      = 1516453500765208596
-RULES_CHANNEL_ID        = 1512774929253273821
+RULES_CHANNEL_ID        = 1516453504955187230
 TICKET_PANEL_CHANNEL_ID = 1516453513717219489
 TICKET_CATEGORY_ID      = 1516453498269597697
 SUPPORT_ROLE_ID         = 1512774845287497819
@@ -498,7 +498,7 @@ async def on_member_join(member: discord.Member):
             embed = discord.Embed(
                 description=(
                     f"Hey {member.mention},\n\n"
-                    f"Wir freuen uns dich im **7zarnova** Server begrüßen zu dürfen!\n"
+                    f"Wir freuen uns dich im **Corazon** Server begrüßen zu dürfen!\n"
                     f"Bitte beachte unser <#{RULES_CHANNEL_ID}>!\n\n"
                     f"• Sei nett\n"
                     f"• Viel Spaß!"
