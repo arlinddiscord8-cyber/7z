@@ -27,17 +27,18 @@ WELCOME_CHANNEL_ID      = 1516453500765208596
 RULES_CHANNEL_ID        = 1516453504955187230
 TICKET_PANEL_CHANNEL_ID = 1516453513717219489
 TICKET_CATEGORY_ID      = 1516453498269597697
-SUPPORT_ROLE_ID         = 1512774845287497819
+SUPPORT_ROLE_ID         = 1516453478564630659   # updated
 BOOST_CHANNEL_ID        = 1516453537024966708
 AUTO_REACT_CHANNEL_IDS  = {1516453525041713225, 1516453552464203806}
+ACTIVITY_CHECK_CHANNEL_ID = 1516453525041713225  # bot reacts ✅, second human reactor gets pinged
 COUNTING_CHANNEL_ID     = 1516453550996324392
-AUTO_ROLE_ID            = 1512774841005244426
-TRIGGER_ROLE_ID         = 1512774837708525658
-EXTRA_ROLE_ID_1         = 1512774836806619239
-EXTRA_ROLE_ID_2         = 1512775255070867456
+AUTO_ROLE_ID            = 1516453463188307970   # updated
+TRIGGER_ROLE_ID         = 1516453466921242875   # updated (Member-Rolle)
+EXTRA_ROLE_ID_1         = 1516453459115638876   # updated
+EXTRA_ROLE_ID_2         = 1516453459115638876   # updated (same ID as provided)
 INVITE_CHANNEL_ID       = 1516453511716405421
-ROLE_CMD_ALLOWED_ROLE_ID = 1512774843047870564
-TIMEOUT_ROLE_ID          = 1512774841940443256
+ROLE_CMD_ALLOWED_ROLE_ID = 1516453466921242875  # updated
+TIMEOUT_ROLE_ID          = 1516453465810014460  # updated
 
 VOICE_ALWAYS_ON = True
 
@@ -48,7 +49,7 @@ VOICE_ALWAYS_ON = True
 SPAM_MAX_MESSAGES = 5
 SPAM_INTERVAL     = 3
 SPAM_TIMEOUT_SECS = 300
-MENTION_MAX       = 3        # lowered from 4
+MENTION_MAX       = 3
 CREATE_MAX        = 3
 CREATE_INTERVAL   = 15
 
@@ -99,8 +100,6 @@ first_react_announced: set[int] = set()
 #  DATABASE
 # ================================================================
 
-# Railway persistent volume mounts at /data — use it if available
-# Go to Railway → your service → Volumes → Add Volume → mount path: /data
 import pathlib
 _DB_PATH = "/data/bot.db" if pathlib.Path("/data").exists() else "bot.db"
 if not pathlib.Path("/data").exists():
@@ -226,9 +225,7 @@ def _increment_ticket_counter(guild_id: int) -> int:
     return _get_ticket_counter(guild_id)
 
 invite_cache: dict[int, dict[str, int]] = {}
-# channel_id → (author, content, timestamp)
 snipe_cache:  dict[int, tuple] = {}
-# user_id → (reason, timestamp)
 afk_users:    dict[int, tuple] = {}
 
 # ================================================================
@@ -256,15 +253,6 @@ def can_timeout(member: discord.Member) -> bool:
     return TIMEOUT_ROLE_ID != 0 and any(r.id == TIMEOUT_ROLE_ID for r in member.roles)
 
 def is_whitelisted(member) -> bool:
-    """
-    Returns True if this member should be exempt from auto-security actions.
-    Exempt if:
-      - They are an Owner
-      - They are in the manual whitelist
-      - They have a whitelisted role
-      - Their top role is ABOVE the bot's top role (they are a legitimate admin/mod
-        with higher hierarchy than the bot — the bot can't and shouldn't touch them)
-    """
     if not member:
         return False
     if getattr(member, "id", None) in OWNERS:
@@ -272,11 +260,8 @@ def is_whitelisted(member) -> bool:
     if getattr(member, "id", None) in SECURITY_WHITELIST_USERS:
         return True
     if hasattr(member, "roles"):
-        # Manual whitelist role
         if any(r.id in SECURITY_WHITELIST_ROLES for r in member.roles):
             return True
-        # Role hierarchy check — if the member's top role is above the bot's
-        # top role they are a legitimate higher-up, don't touch them
         guild = getattr(member, "guild", None)
         if guild:
             bot_member = guild.me
@@ -294,10 +279,8 @@ def eval_math_expression(expr: str):
     """Safe math evaluation without eval()."""
     import operator, re as _re
     expr = expr.strip()
-    # Only allow digits, operators, parentheses, spaces, decimals
     if not _re.fullmatch(r"[\d\s\+\-\*\/\(\)\.]+", expr):
         return None
-    # Tokenise and evaluate safely using a recursive parser
     try:
         import ast
         tree = ast.parse(expr, mode="eval")
@@ -332,7 +315,6 @@ async def mod_log(
     color: discord.Color = discord.Color.from_rgb(30, 30, 30),
     fields: list | None = None,
 ):
-    """Only sends logs that are relevant for moderation."""
     channel = guild.get_channel(LOG_CHANNEL_ID)
     if not channel:
         return
@@ -386,8 +368,6 @@ async def on_ready():
         counting_state["current"]   = current
         counting_state["last_user"] = last_user if last_user else None
 
-    # Cache current Discord invite uses — this is only for delta detection
-    # The actual invite counts are stored in the DB and survive restarts
     for guild in bot.guilds:
         try:
             invites = await guild.invites()
@@ -396,7 +376,7 @@ async def on_ready():
             pass
 
 # ================================================================
-#  INVITE CACHE SYNC  (keeps cache accurate when invites are created/deleted)
+#  INVITE CACHE SYNC
 # ================================================================
 
 @bot.event
@@ -521,24 +501,15 @@ async def on_member_join(member: discord.Member):
 
         invite_ch = member.guild.get_channel(INVITE_CHANNEL_ID)
         if not invite_ch:
-            pass  # no invite channel configured
+            pass
 
         elif used_invite is None:
-            # Vanity URL join
-            vanity_code = None
-            try:
-                vanity = await member.guild.vanity_invite()
-                if vanity:
-                    vanity_code = vanity.code
-            except Exception:
-                pass
-
+            # ── Vanity URL join — show member mention, no vanity code ──
             embed = discord.Embed(
                 title=member.guild.name,
                 description=(
                     f"{member.mention} ist beigetreten.\n"
-                    f"Eingeladen über **Vanity URL**"
-                    + (f" (`/{vanity_code}`)" if vanity_code else "")
+                    f"Eingeladen über **Vanity Link**"
                 ),
                 color=discord.Color.from_rgb(149, 165, 166),
                 timestamp=datetime.utcnow(),
@@ -589,17 +560,12 @@ async def on_member_remove(member: discord.Member):
     if guild.id != ALLOWED_GUILD_ID:
         return
 
-    # Update left-invites — find which invite they used and increment left counter
     try:
         new_invites = await guild.invites()
-        old_cache   = invite_cache.get(guild.id, {})
-        # A member leaving doesn't change invite use counts, so we can't detect
-        # which invite they used here. We store who joined via which invite in DB.
         invite_cache[guild.id] = {inv.code: inv.uses for inv in new_invites}
     except Exception:
         pass
 
-    # Mass kick detection
     await asyncio.sleep(0.3)
     entry = await get_latest_audit(guild, discord.AuditLogAction.kick, member.id)
     if not entry or entry.target.id != member.id:
@@ -639,6 +605,7 @@ async def on_member_update(before: discord.Member, after: discord.Member):
 
     before_ids = {r.id for r in before.roles}
     after_ids  = {r.id for r in after.roles}
+    # When TRIGGER_ROLE_ID (Member-Rolle) is added, also add both extra roles
     if TRIGGER_ROLE_ID in after_ids and TRIGGER_ROLE_ID not in before_ids:
         for extra_id in (EXTRA_ROLE_ID_1, EXTRA_ROLE_ID_2):
             extra = after.guild.get_role(extra_id)
@@ -676,7 +643,6 @@ async def on_message(message: discord.Message):
             try:
                 until = discord.utils.utcnow() + timedelta(seconds=SPAM_TIMEOUT_SECS)
                 await message.author.timeout(until, reason="Auto-Timeout: Message Spam")
-                # Delete recent spam messages
                 def is_spam(m):
                     return m.author.id == message.author.id
                 try:
@@ -701,7 +667,6 @@ async def on_message(message: discord.Message):
             return
 
         # ── everyone / here ping spam ────────────────────────
-        # Allow normal use — only block rapid repeated attempts
         if "@everyone" in message.content or "@here" in message.content:
             mention_tracker[message.author.id].append(now)
             mention_tracker[message.author.id] = [
@@ -765,7 +730,6 @@ async def on_message(message: discord.Message):
             count = len(invite_link_tracker[message.author.id])
 
             if count >= 2:
-                # Repeated invite spam → timeout
                 try:
                     until = discord.utils.utcnow() + timedelta(seconds=SPAM_TIMEOUT_SECS)
                     await message.author.timeout(until, reason="Auto-Timeout: Invite Link Spam")
@@ -785,7 +749,6 @@ async def on_message(message: discord.Message):
                 except Exception:
                     pass
             else:
-                # First offence — just delete and warn
                 try:
                     await message.channel.send(
                         f"{message.author.mention} Discord invites are not allowed here.",
@@ -804,11 +767,17 @@ async def on_message(message: discord.Message):
 
     # ── auto-react ───────────────────────────────────────────
     if message.channel.id in AUTO_REACT_CHANNEL_IDS:
-        emoji = "✅" if message.channel.id == 1512774955413147648 else "✔️"
-        try:
-            await message.add_reaction(emoji)
-        except Exception:
-            pass
+        # Activity-Check channel: bot reacts ✅, then tracks who reacts second (human)
+        if message.channel.id == ACTIVITY_CHECK_CHANNEL_ID:
+            try:
+                await message.add_reaction("✅")
+            except Exception:
+                pass
+        else:
+            try:
+                await message.add_reaction("✔️")
+            except Exception:
+                pass
 
     # ── counting ─────────────────────────────────────────────
     if COUNTING_CHANNEL_ID and message.channel.id == COUNTING_CHANNEL_ID:
@@ -843,7 +812,7 @@ async def on_message(message: discord.Message):
     await bot.process_commands(message)
 
 # ================================================================
-#  MESSAGE EDIT / DELETE LOGS  (only relevant, no noise)
+#  MESSAGE EDIT / DELETE LOGS
 # ================================================================
 
 @bot.event
@@ -852,17 +821,15 @@ async def on_message_edit(before: discord.Message, after: discord.Message):
         return
     if after.author.bot or before.content == after.content:
         return
-    # Only log if content actually changed and is not empty
     if not before.content and not after.content:
         return
-    pass  # message edit not logged
+    pass
 
 @bot.event
 async def on_message_delete(message: discord.Message):
     if not message.guild or message.guild.id != ALLOWED_GUILD_ID:
         return
 
-    # counting delete notice
     if COUNTING_CHANNEL_ID and message.channel.id == COUNTING_CHANNEL_ID:
         if message.author.bot:
             return
@@ -876,15 +843,12 @@ async def on_message_delete(message: discord.Message):
             pass
         return
 
-    # Don't log bot message deletions
     if message.author.bot:
         return
 
-    # Don't log empty messages (embeds only etc)
     if not message.content:
         return
 
-    # Save to snipe cache
     snipe_cache[message.channel.id] = (
         message.author,
         message.content,
@@ -947,7 +911,9 @@ async def handle_counting(message: discord.Message):
             pass
 
 # ================================================================
-#  FIRST REACTOR
+#  FIRST REACTOR — Activity-Check channel
+#  Bot reacts ✅ automatically (in on_message).
+#  The FIRST HUMAN to also react ✅ on that message gets a ping.
 # ================================================================
 
 @bot.event
@@ -956,14 +922,19 @@ async def on_reaction_add(reaction: discord.Reaction, user: discord.User):
         return
     if not reaction.message.guild or reaction.message.guild.id != ALLOWED_GUILD_ID:
         return
-    if reaction.message.channel.id != 1512774955413147648:
+    if reaction.message.channel.id != ACTIVITY_CHECK_CHANNEL_ID:
         return
+
     msg_id = reaction.message.id
     if msg_id in first_react_announced:
         return
+
     first_react_announced.add(msg_id)
     try:
-        await reaction.message.channel.send(f"{user.mention} was first 🥇")
+        await reaction.message.channel.send(
+            f"{user.mention} war erster 🥇",
+            allowed_mentions=discord.AllowedMentions(users=True),
+        )
     except Exception:
         pass
 
@@ -979,7 +950,7 @@ async def on_voice_state_update(
 ):
     if not member.guild or member.guild.id != ALLOWED_GUILD_ID or member.bot:
         return
-    pass  # voice state not logged
+    pass
 
 # ================================================================
 #  TICKET SYSTEM
@@ -993,11 +964,8 @@ def can_manage_ticket(member: discord.Member) -> bool:
         return True
     return any(r.id == SUPPORT_ROLE_ID or r.permissions.administrator for r in member.roles)
 
-# transcript removed
-
 
 class TicketCloseView(View):
-    """Initial view shown when ticket is created — Close + Delete buttons."""
     def __init__(self):
         super().__init__(timeout=None)
 
@@ -1042,7 +1010,6 @@ class TicketCloseView(View):
 
 
 class TicketDeleteView(View):
-    """Kept for backwards compatibility with old persistent buttons."""
     def __init__(self):
         super().__init__(timeout=None)
 
@@ -1204,7 +1171,6 @@ async def kick(ctx: commands.Context, member: discord.Member = None, *, reason: 
         embed.add_field(name="Mod",    value=str(ctx.author))
         embed.add_field(name="Reason", value=reason)
         await ctx.send(embed=embed)
-
     except discord.Forbidden:
         await ctx.send("Missing permissions.")
     except Exception as e:
@@ -1230,7 +1196,6 @@ async def ban(ctx: commands.Context, member: discord.Member = None, *, reason: s
         embed.add_field(name="Mod",    value=str(ctx.author))
         embed.add_field(name="Reason", value=reason)
         await ctx.send(embed=embed)
-
     except discord.Forbidden:
         await ctx.send("Missing permissions.")
     except Exception as e:
@@ -1253,7 +1218,6 @@ async def unban(ctx: commands.Context, user_id: str = None, *, reason: str = "No
         embed.add_field(name="Mod",    value=str(ctx.author))
         embed.add_field(name="Reason", value=reason)
         await ctx.send(embed=embed)
-
     except discord.NotFound:
         await ctx.send("User not found or not banned.")
     except Exception as e:
@@ -1294,7 +1258,6 @@ async def timeout(
         embed.add_field(name="Reason",   value=reason)
         embed.add_field(name="Mod",      value=str(ctx.author))
         await ctx.send(embed=embed)
-
     except discord.Forbidden:
         await ctx.send("Missing permissions.")
     except Exception as e:
@@ -1324,8 +1287,6 @@ async def warn(ctx: commands.Context, member: discord.Member = None, *, reason: 
     embed.add_field(name="Total Warns", value=str(len(warns)))
     await ctx.send(embed=embed)
 
-    # DM
-    dm_status = "DM sent"
     try:
         dm_embed = discord.Embed(
             title=f"You received a warning on {ctx.guild.name}",
@@ -1335,9 +1296,7 @@ async def warn(ctx: commands.Context, member: discord.Member = None, *, reason: 
         )
         await member.send(embed=dm_embed)
     except Exception:
-        dm_status = "DM failed (blocked)"
-
-
+        pass
 
 
 @bot.command()
@@ -1554,7 +1513,6 @@ async def role_cmd(ctx: commands.Context, member: discord.Member = None, *, role
         embed.set_footer(text=f"By {ctx.author} · {ctx.author.id}")
         await ctx.send(embed=embed)
 
-
     except discord.Forbidden:
         await ctx.send("Missing permissions for that role.")
     except Exception as e:
@@ -1654,7 +1612,6 @@ async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
     if channel.guild.id != ALLOWED_GUILD_ID:
         return
 
-    # Don't restore ticket channels — they should stay deleted
     if (
         getattr(channel, "category_id", None) == TICKET_CATEGORY_ID
         and channel.name.startswith("ticket-")
@@ -1688,7 +1645,6 @@ async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
     except Exception:
         pass
 
-    # Restore channel
     try:
         kwargs = dict(
             name=saved["name"],
@@ -2046,7 +2002,6 @@ async def help_cmd(ctx: commands.Context):
         "`?clearwarns @user`"
     ), inline=False)
     embed.add_field(name="Roles", value="`?role @user <name or ID>`", inline=False)
-
     embed.add_field(name="Info", value=(
         "`/userinfo [@user]`\n"
         "`/serverinfo`\n"
@@ -2065,7 +2020,7 @@ async def help_cmd(ctx: commands.Context):
     ), inline=False)
     embed.add_field(name="Tickets", value=(
         "`?close` — Close ticket\n"
-        "`?delete` — Save transcript & delete\n"
+        "`?delete` — Delete ticket\n"
         "`/adduser @user` — Add user to ticket\n"
         "`/removeuser @user` — Remove user from ticket\n"
         "`/renameticket <name>` — Rename ticket"
@@ -2098,7 +2053,6 @@ async def call(ctx: commands.Context):
         await ctx.send("Connected.", delete_after=3)
     except Exception as e:
         await ctx.send(f"Error: {e}")
-
 
 # ================================================================
 #  SLASH COMMANDS — SAY / ALTS / TICKET TOOLS
