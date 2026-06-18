@@ -173,11 +173,12 @@ _DEFAULT_IDS = {
     "AUTO_ROLE_ID":            AUTO_ROLE_ID,
     "TRIGGER_ROLE_ID":         TRIGGER_ROLE_ID,
     "EXTRA_ROLE_ID_1":         EXTRA_ROLE_ID_1,
-    "EXTRA_ROLE_ID_2":         EXTRA_ROLE_ID_2,
+    "EXTRA_ROLE_ID_2":         EXTRA_ROLE_ID_2,   # was missing — fixed
     "INVITE_CHANNEL_ID":       INVITE_CHANNEL_ID,
     "ROLE_CMD_ALLOWED_ROLE_ID":ROLE_CMD_ALLOWED_ROLE_ID,
     "TIMEOUT_ROLE_ID":         TIMEOUT_ROLE_ID,
     "CALL_VOICE_CHANNEL_ID":   CALL_VOICE_CHANNEL_ID,
+    "ACTIVITY_CHECK_CHANNEL_ID": ACTIVITY_CHECK_CHANNEL_ID,
 }
 
 _DEFAULT_MESSAGES = {
@@ -388,7 +389,8 @@ def can_moderate(member):
 def can_use_role_cmd(member):
     if member.id in OWNERS:
         return True
-    return any(r.id == ROLE_CMD_ALLOWED_ROLE_ID for r in member.roles)
+    allowed_id = _cfg_get_id(member.guild.id, "ROLE_CMD_ALLOWED_ROLE_ID") if hasattr(member, "guild") else ROLE_CMD_ALLOWED_ROLE_ID
+    return any(r.id == allowed_id for r in member.roles)
 
 def can_timeout(member):
     if member.id in OWNERS:
@@ -744,12 +746,23 @@ async def on_member_update(before: discord.Member, after: discord.Member):
 
     before_ids = {r.id for r in before.roles}
     after_ids  = {r.id for r in after.roles}
-    if TRIGGER_ROLE_ID in after_ids and TRIGGER_ROLE_ID not in before_ids:
-        for extra_id in (EXTRA_ROLE_ID_1, EXTRA_ROLE_ID_2):
-            extra = after.guild.get_role(extra_id)
-            if extra:
+
+    # ── Trigger: wenn Rolle 1 (TRIGGER_ROLE_ID) hinzugefügt wird,
+    #    gib automatisch Rolle 2 (EXTRA_ROLE_ID_1) und Rolle 3 (EXTRA_ROLE_ID_2)
+    trigger_id = _cfg_get_id(after.guild.id, "TRIGGER_ROLE_ID")
+    if trigger_id and (trigger_id in after_ids) and (trigger_id not in before_ids):
+        extra1_id = _cfg_get_id(after.guild.id, "EXTRA_ROLE_ID_1")
+        extra2_id = _cfg_get_id(after.guild.id, "EXTRA_ROLE_ID_2")
+        to_add = set()
+        if extra1_id:
+            to_add.add(extra1_id)
+        if extra2_id and extra2_id != extra1_id:
+            to_add.add(extra2_id)
+        for eid in to_add:
+            role_obj = after.guild.get_role(eid)
+            if role_obj and role_obj not in after.roles:
                 try:
-                    await after.add_roles(extra, reason="Trigger Role")
+                    await after.add_roles(role_obj, reason="Auto: Trigger-Rolle vergeben")
                 except Exception:
                     pass
 
@@ -2148,12 +2161,24 @@ class PermValueView(discord.ui.View):
         try:
             ow = self.channel.overwrites_for(self.role)
             setattr(ow, perm, value)
-            await self.channel.set_permissions(self.role, overwrite=ow)
-            label = "Erlaubt" if value is True else ("Verboten" if value is False else "Neutral")
+            # If the overwrite is completely empty/neutral, Discord won't show the role
+            # in channel settings. We ensure at least view_channel is set so it appears.
+            if ow.is_empty():
+                # User set neutral on last perm → remove overwrite entirely (clean)
+                await self.channel.set_permissions(self.role, overwrite=None)
+                label = "Neutral (Overwrite entfernt)"
+            else:
+                await self.channel.set_permissions(self.role, overwrite=ow)
+                label = "Erlaubt ✅" if value is True else ("Verboten ❌" if value is False else "Neutral ⬜")
             await interaction.response.edit_message(
-                content=f"✅ **{perm.replace('_',' ').title()}** → **{label}** für **{self.role.name}** in **{self.channel.name}**.",
+                content=(
+                    f"**{perm.replace('_',' ').title()}** → **{label}**\n"
+                    f"Rolle: **{self.role.name}** | Kanal: **{self.channel.name}**"
+                ),
                 view=None
             )
+            await mod_log(interaction.guild, "Kanal-Perms",
+                f"{interaction.user} hat **{perm}** für **{self.role.name}** in **{self.channel.name}** → {label}")
         except Exception as e:
             await interaction.response.edit_message(content=f"Fehler: {e}", view=None)
 
@@ -2455,13 +2480,15 @@ _PERM_CHOICES = {
 
 class RoleCreatePermView(discord.ui.View):
     """Multi-select permissions when creating a role."""
-    def __init__(self, ctx, role_name: str, color: discord.Color, hoist: bool):
+    def __init__(self, ctx_or_interaction, role_name: str, color: discord.Color, hoist: bool, is_slash: bool = False):
         super().__init__(timeout=120)
-        self.ctx       = ctx
+        self.ctx_or_interaction = ctx_or_interaction
         self.role_name = role_name
         self.color     = color
         self.hoist     = hoist
+        self.is_slash  = is_slash
         self.chosen    : set[str] = set()
+        self.add_to_channels: bool = False
 
         options = [
             discord.SelectOption(label=k.replace("_", " ").title(), value=k)
@@ -2483,7 +2510,9 @@ class RoleCreatePermView(discord.ui.View):
 
     @discord.ui.button(label="✅ Rolle erstellen", style=discord.ButtonStyle.green, row=1)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.ctx.author.id:
+        author_id = (self.ctx_or_interaction.author.id
+                     if not self.is_slash else self.ctx_or_interaction.user.id)
+        if interaction.user.id != author_id:
             return await interaction.response.send_message("Nicht dein Menü.", ephemeral=True)
         perms = discord.Permissions()
         for p in self.chosen:
@@ -2495,14 +2524,35 @@ class RoleCreatePermView(discord.ui.View):
                 permissions=perms,
                 color=self.color,
                 hoist=self.hoist,
-                reason=f"?role create von {interaction.user}",
+                reason=f"Rolle erstellt von {interaction.user}",
             )
+            # ── Automatisch als Channel-Override in allen Kanälen hinzufügen ──
+            # (wie Member-Rolle: in jedem Kanal als Overwrite sichtbar)
+            added_channels = 0
+            for ch in interaction.guild.channels:
+                try:
+                    ow = discord.PermissionOverwrite()
+                    # Standard: Kanal sehen + schreiben erlauben (wie Member)
+                    ow.view_channel   = True
+                    ow.send_messages  = True
+                    ow.read_message_history = True
+                    if hasattr(ch, "connect"):
+                        ow.connect = True
+                    await ch.set_permissions(role, overwrite=ow,
+                                             reason="Auto-Overwrite nach Rollenerstellung")
+                    added_channels += 1
+                except Exception:
+                    pass
+
             await interaction.response.edit_message(
-                content=f"✅ Rolle **{role.name}** erstellt ({role.mention}) mit {len(self.chosen)} Berechtigung(en).",
+                content=(
+                    f"✅ Rolle **{role.name}** ({role.mention}) erstellt.\n"
+                    f"Berechtigungen: {len(self.chosen)} | Als Override in {added_channels} Kanälen hinzugefügt."
+                ),
                 view=None
             )
             await mod_log(interaction.guild, "Rolle erstellt",
-                f"{interaction.user} hat Rolle **{role.name}** erstellt. Perms: {', '.join(self.chosen) or 'keine'}")
+                f"{interaction.user} hat **{role.name}** erstellt, in {added_channels} Kanälen als Override gesetzt.")
         except Exception as e:
             await interaction.response.edit_message(content=f"Fehler: {e}", view=None)
 
@@ -2520,16 +2570,15 @@ async def role_create_cmd(
 ):
     """
     ?rolecreate <Name> [#Farbe] [ja/nein]
-    Erstellt eine Rolle mit wählbaren Berechtigungen.
+    Erstellt eine Rolle mit wählbaren Berechtigungen + automatischen Channel-Overwrites.
     """
     if ctx.guild.id != ALLOWED_GUILD_ID:
         return
     if not can_moderate(ctx.author):
         return await _reply_and_clean(ctx, "Keine Berechtigung.")
     if role_name is None:
-        return await _reply_and_clean(ctx, "Benutzung: `?rolecreate <Name> [#Farbe] [ja/nein für Anzeige]`")
+        return await _reply_and_clean(ctx, "Benutzung: `?rolecreate <Name> [#Farbe] [ja/nein]`")
 
-    # Parse color
     try:
         color_hex = color_hex.lstrip("#")
         r = int(color_hex[0:2], 16)
@@ -2540,11 +2589,38 @@ async def role_create_cmd(
         color = discord.Color.default()
 
     show_hoist = hoist.lower() in ("ja", "yes", "true", "1")
+    view = RoleCreatePermView(ctx, role_name, color, show_hoist, is_slash=False)
+    await ctx.send(f"Berechtigungen für neue Rolle **{role_name}** wählen:", view=view)
 
-    view = RoleCreatePermView(ctx, role_name, color, show_hoist)
-    await ctx.send(
-        f"Berechtigungen für neue Rolle **{role_name}** wählen:",
-        view=view
+
+@bot.tree.command(name="rolecreate",
+                  description="Neue Rolle erstellen mit Berechtigungen und Channel-Overwrites",
+                  guild=discord.Object(id=ALLOWED_GUILD_ID))
+async def slash_rolecreate(
+    interaction: discord.Interaction,
+    name: str,
+    color_hex: str = "000000",
+    hoist: bool = False,
+):
+    """
+    name      — Rollenname
+    color_hex — Hex-Farbe ohne # (z.B. ff5500)
+    hoist     — In der Mitgliederliste separat anzeigen
+    """
+    if not can_moderate(interaction.user):
+        return await interaction.response.send_message("Keine Berechtigung.", ephemeral=True)
+    try:
+        color_hex = color_hex.lstrip("#")
+        r = int(color_hex[0:2], 16)
+        g = int(color_hex[2:4], 16)
+        b = int(color_hex[4:6], 16)
+        color = discord.Color.from_rgb(r, g, b)
+    except Exception:
+        color = discord.Color.default()
+
+    view = RoleCreatePermView(interaction, name, color, hoist, is_slash=True)
+    await interaction.response.send_message(
+        f"Berechtigungen für neue Rolle **{name}** wählen:", view=view
     )
 
 # ================================================================
@@ -2697,6 +2773,491 @@ async def help_cmd(ctx: commands.Context):
     ), inline=False)
     embed.set_footer(text=f"Angefragt von {ctx.author}")
     await ctx.send(embed=embed)
+
+# ================================================================
+#  SLASH VERSIONS OF MOD COMMANDS
+# ================================================================
+
+@bot.tree.command(name="role", description="Rolle vergeben oder entfernen",
+                  guild=discord.Object(id=ALLOWED_GUILD_ID))
+async def slash_role(interaction: discord.Interaction, member: discord.Member, role: discord.Role):
+    if not can_use_role_cmd(interaction.user):
+        return await interaction.response.send_message("Keine Berechtigung.", ephemeral=True)
+    if role >= interaction.guild.me.top_role:
+        return await interaction.response.send_message("Diese Rolle ist höher als meine höchste Rolle.", ephemeral=True)
+    if role.permissions.administrator and interaction.user.id not in OWNERS:
+        try:
+            await interaction.user.kick(reason="Versuch Admin-Rolle zu vergeben")
+        except Exception:
+            pass
+        await mod_log(interaction.guild, "Admin-Rollen-Schutz",
+            f"{interaction.user} versuchte Admin-Rolle **{role.name}** zu vergeben → gekickt.")
+        return
+    try:
+        if role in member.roles:
+            await member.remove_roles(role, reason=f"/role von {interaction.user}")
+            await interaction.response.send_message(f"Rolle **{role.name}** von {member.mention} entfernt.")
+        else:
+            await member.add_roles(role, reason=f"/role von {interaction.user}")
+            await interaction.response.send_message(f"Rolle **{role.name}** an {member.mention} vergeben.")
+        await mod_log(interaction.guild, "Rolle", f"{interaction.user} → {member} | {role.name}")
+    except discord.Forbidden:
+        await interaction.response.send_message("Fehlende Berechtigungen.", ephemeral=True)
+
+
+@bot.tree.command(name="kick", description="Mitglied kicken",
+                  guild=discord.Object(id=ALLOWED_GUILD_ID))
+async def slash_kick(interaction: discord.Interaction, member: discord.Member,
+                     reason: str = "Kein Grund angegeben"):
+    if not can_moderate(interaction.user):
+        return await interaction.response.send_message("Keine Berechtigung.", ephemeral=True)
+    if member.id in OWNERS:
+        return await interaction.response.send_message("Owner können nicht gekickt werden.", ephemeral=True)
+    if member.top_role >= interaction.guild.me.top_role:
+        return await interaction.response.send_message("Rolle zu hoch.", ephemeral=True)
+    try:
+        await member.kick(reason=f"{interaction.user}: {reason}")
+        await interaction.response.send_message(f"**{interaction.user.name}** hat **{member.name}** gekickt. | {reason}")
+        await mod_log(interaction.guild, "Kick", f"{interaction.user} hat {member} ({member.id}) gekickt. Grund: {reason}")
+    except Exception as e:
+        await interaction.response.send_message(f"Fehler: {e}", ephemeral=True)
+
+
+@bot.tree.command(name="ban", description="Mitglied bannen",
+                  guild=discord.Object(id=ALLOWED_GUILD_ID))
+async def slash_ban(interaction: discord.Interaction, member: discord.Member,
+                    reason: str = "Kein Grund angegeben"):
+    if not can_moderate(interaction.user):
+        return await interaction.response.send_message("Keine Berechtigung.", ephemeral=True)
+    if member.id in OWNERS:
+        return await interaction.response.send_message("Owner können nicht gebannt werden.", ephemeral=True)
+    if member.top_role >= interaction.guild.me.top_role:
+        return await interaction.response.send_message("Rolle zu hoch.", ephemeral=True)
+    try:
+        await member.ban(reason=f"{interaction.user}: {reason}", delete_message_days=1)
+        await interaction.response.send_message(f"**{interaction.user.name}** hat **{member.name}** gebannt. | {reason}")
+        await mod_log(interaction.guild, "Ban", f"{interaction.user} hat {member} ({member.id}) gebannt. Grund: {reason}")
+    except Exception as e:
+        await interaction.response.send_message(f"Fehler: {e}", ephemeral=True)
+
+
+@bot.tree.command(name="unban", description="Nutzer entbannen",
+                  guild=discord.Object(id=ALLOWED_GUILD_ID))
+async def slash_unban(interaction: discord.Interaction, user_id: str,
+                      reason: str = "Kein Grund angegeben"):
+    if not can_moderate(interaction.user):
+        return await interaction.response.send_message("Keine Berechtigung.", ephemeral=True)
+    if not user_id.isdigit():
+        return await interaction.response.send_message("Ungültige User-ID.", ephemeral=True)
+    try:
+        user = await bot.fetch_user(int(user_id))
+        await interaction.guild.unban(user, reason=f"{interaction.user}: {reason}")
+        await interaction.response.send_message(f"**{user}** wurde entbannt.")
+        await mod_log(interaction.guild, "Unban", f"{interaction.user} hat {user} ({user.id}) entbannt.")
+    except discord.NotFound:
+        await interaction.response.send_message("Nicht gefunden oder nicht gebannt.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"Fehler: {e}", ephemeral=True)
+
+
+@bot.tree.command(name="timeout", description="Mitglied timeoutem",
+                  guild=discord.Object(id=ALLOWED_GUILD_ID))
+async def slash_timeout(interaction: discord.Interaction, member: discord.Member,
+                        duration: str = "10m", reason: str = "Kein Grund angegeben"):
+    """duration: z.B. 10m, 2h, 1d"""
+    if not can_timeout(interaction.user):
+        return await interaction.response.send_message("Keine Berechtigung.", ephemeral=True)
+    units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    unit = duration[-1].lower()
+    if unit not in units or not duration[:-1].isdigit():
+        return await interaction.response.send_message("Ungültige Zeit. Beispiel: 10m, 2h, 1d", ephemeral=True)
+    seconds = int(duration[:-1]) * units[unit]
+    if seconds > 2419200:
+        return await interaction.response.send_message("Maximal 28 Tage.", ephemeral=True)
+    try:
+        until = discord.utils.utcnow() + timedelta(seconds=seconds)
+        await member.timeout(until, reason=f"{interaction.user}: {reason}")
+        await interaction.response.send_message(f"**{member.name}** für **{duration}** getimeouted. | {reason}")
+        await mod_log(interaction.guild, "Timeout", f"{interaction.user} hat {member} ({member.id}) für {duration} getimeouted.")
+    except Exception as e:
+        await interaction.response.send_message(f"Fehler: {e}", ephemeral=True)
+
+
+@bot.tree.command(name="untimeout", description="Timeout eines Mitglieds entfernen",
+                  guild=discord.Object(id=ALLOWED_GUILD_ID))
+async def slash_untimeout(interaction: discord.Interaction, member: discord.Member):
+    if not can_timeout(interaction.user):
+        return await interaction.response.send_message("Keine Berechtigung.", ephemeral=True)
+    try:
+        await member.timeout(None, reason=f"Timeout entfernt von {interaction.user}")
+        await interaction.response.send_message(f"Timeout von **{member.name}** entfernt.")
+        await mod_log(interaction.guild, "Timeout entfernt", f"{interaction.user} hat Timeout von {member} ({member.id}) entfernt.")
+    except Exception as e:
+        await interaction.response.send_message(f"Fehler: {e}", ephemeral=True)
+
+
+@bot.tree.command(name="warn", description="Mitglied verwarnen",
+                  guild=discord.Object(id=ALLOWED_GUILD_ID))
+async def slash_warn(interaction: discord.Interaction, member: discord.Member,
+                     reason: str = "Kein Grund angegeben"):
+    if not can_moderate(interaction.user):
+        return await interaction.response.send_message("Keine Berechtigung.", ephemeral=True)
+    warn_id = _add_warn(interaction.guild.id, member.id, interaction.user.id, reason)
+    warns   = _get_warns(interaction.guild.id, member.id)
+    await interaction.response.send_message(
+        f"**{member.name}** verwarnt (#{warn_id}, gesamt: {len(warns)}). | {reason}")
+    await mod_log(interaction.guild, "Warn", f"{interaction.user} hat {member} ({member.id}) verwarnt. #{warn_id} | {reason}")
+    try:
+        dm_embed = discord.Embed(
+            title=f"Verwarnung auf {interaction.guild.name}",
+            description=f"**Grund:** {reason}\n**Warn #{warn_id}** — Gesamt: {len(warns)}",
+            color=discord.Color.yellow(), timestamp=datetime.utcnow(),
+        )
+        await member.send(embed=dm_embed)
+    except Exception:
+        pass
+
+
+@bot.tree.command(name="warns", description="Verwarnungen eines Mitglieds anzeigen",
+                  guild=discord.Object(id=ALLOWED_GUILD_ID))
+async def slash_warns(interaction: discord.Interaction, member: discord.Member):
+    if not can_moderate(interaction.user):
+        return await interaction.response.send_message("Keine Berechtigung.", ephemeral=True)
+    warn_list = _get_warns(interaction.guild.id, member.id)
+    embed = discord.Embed(title=f"Verwarnungen — {member}", color=discord.Color.yellow(), timestamp=datetime.utcnow())
+    embed.set_thumbnail(url=member.display_avatar.url)
+    if not warn_list:
+        embed.description = "Keine Verwarnungen."
+    else:
+        for w_id, mod_id, reason, ts in warn_list:
+            mod = interaction.guild.get_member(mod_id)
+            embed.add_field(name=f"#{w_id} — {ts[:10]}",
+                            value=f"**Grund:** {reason}\n**Mod:** {str(mod) if mod else mod_id}", inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="purge", description="Nachrichten löschen",
+                  guild=discord.Object(id=ALLOWED_GUILD_ID))
+async def slash_purge(interaction: discord.Interaction, amount: int):
+    if not can_moderate(interaction.user):
+        return await interaction.response.send_message("Keine Berechtigung.", ephemeral=True)
+    if amount < 1 or amount > 1000:
+        return await interaction.response.send_message("Zwischen 1 und 1000.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    deleted = await interaction.channel.purge(limit=amount)
+    await interaction.followup.send(f"{len(deleted)} Nachrichten gelöscht.", ephemeral=True)
+
+
+@bot.tree.command(name="roleall", description="Allen Mitgliedern eine Rolle geben",
+                  guild=discord.Object(id=ALLOWED_GUILD_ID))
+async def slash_roleall(interaction: discord.Interaction, role: discord.Role):
+    if not can_moderate(interaction.user):
+        return await interaction.response.send_message("Keine Berechtigung.", ephemeral=True)
+    if role >= interaction.guild.me.top_role:
+        return await interaction.response.send_message("Rolle zu hoch.", ephemeral=True)
+    if role.permissions.administrator and interaction.user.id not in OWNERS:
+        return await interaction.response.send_message("Admin-Rollen nur für Owner.", ephemeral=True)
+    await interaction.response.defer()
+    count = 0
+    for member in interaction.guild.members:
+        if member.bot or role in member.roles:
+            continue
+        try:
+            await member.add_roles(role, reason=f"/roleall von {interaction.user}")
+            count += 1
+        except Exception:
+            pass
+        await asyncio.sleep(0.3)
+    await interaction.followup.send(f"✅ **{role.name}** an **{count}** Mitglieder vergeben.")
+    await mod_log(interaction.guild, "Role-All", f"{interaction.user} hat **{role.name}** an {count} Mitglieder vergeben.")
+
+
+@bot.tree.command(name="hackban", description="Nutzer hacksperren (bannt + merkt ID)",
+                  guild=discord.Object(id=ALLOWED_GUILD_ID))
+async def slash_hackban(interaction: discord.Interaction, member: discord.Member,
+                        reason: str = "Kein Grund angegeben"):
+    if not can_moderate(interaction.user):
+        return await interaction.response.send_message("Keine Berechtigung.", ephemeral=True)
+    if member.id in OWNERS:
+        return await interaction.response.send_message("Owner können nicht gehackbannt werden.", ephemeral=True)
+    try:
+        await interaction.guild.ban(member, reason=f"Hackban von {interaction.user}: {reason}", delete_message_days=1)
+        _hackban_add(interaction.guild.id, member.id, interaction.user.id, reason)
+        await interaction.response.send_message(
+            f"**{member.name}** gehackbannt. | {reason}\nAlt hinzufügen: `/hackban_addalt main_id:{member.id} alt_id:<ID>`")
+        await mod_log(interaction.guild, "Hackban", f"{interaction.user} hat {member} ({member.id}) gehackbannt. Grund: {reason}")
+    except Exception as e:
+        await interaction.response.send_message(f"Fehler: {e}", ephemeral=True)
+
+
+@bot.tree.command(name="hackban_addalt", description="Alt-Account zu einem Hackban hinzufügen",
+                  guild=discord.Object(id=ALLOWED_GUILD_ID))
+async def slash_hackban_addalt(interaction: discord.Interaction, main_id: str, alt_id: str):
+    if not can_moderate(interaction.user):
+        return await interaction.response.send_message("Keine Berechtigung.", ephemeral=True)
+    if not main_id.isdigit() or not alt_id.isdigit():
+        return await interaction.response.send_message("Ungültige IDs.", ephemeral=True)
+    row = _hackban_get(interaction.guild.id, int(main_id))
+    if not row:
+        return await interaction.response.send_message("Kein Hackban für diese ID.", ephemeral=True)
+    _hackban_add_alt(interaction.guild.id, int(main_id), int(alt_id))
+    try:
+        await interaction.guild.ban(discord.Object(id=int(alt_id)), reason=f"Hackban Alt von {main_id}")
+        await interaction.response.send_message(f"Alt `{alt_id}` gebannt und zur Liste hinzugefügt.")
+        await mod_log(interaction.guild, "Hackban-Alt", f"{interaction.user} hat Alt {alt_id} zu Hackban {main_id} hinzugefügt.")
+    except Exception as e:
+        await interaction.response.send_message(f"Alt zur Liste hinzugefügt. Bann fehlgeschlagen: {e}", ephemeral=True)
+
+
+@bot.tree.command(name="unhackban", description="Hackban aufheben",
+                  guild=discord.Object(id=ALLOWED_GUILD_ID))
+async def slash_unhackban(interaction: discord.Interaction, user_id: str):
+    if not can_moderate(interaction.user):
+        return await interaction.response.send_message("Keine Berechtigung.", ephemeral=True)
+    if not user_id.isdigit():
+        return await interaction.response.send_message("Ungültige ID.", ephemeral=True)
+    uid = int(user_id)
+    _hackban_remove(interaction.guild.id, uid)
+    try:
+        await interaction.guild.unban(discord.Object(id=uid), reason=f"Unhackban von {interaction.user}")
+        await interaction.response.send_message(f"Hackban für `{user_id}` aufgehoben.")
+        await mod_log(interaction.guild, "Unhackban", f"{interaction.user} hat Hackban für {user_id} aufgehoben.")
+    except discord.NotFound:
+        await interaction.response.send_message("Eintrag entfernt. Nutzer war nicht mehr gebannt.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"Fehler: {e}", ephemeral=True)
+
+
+# ================================================================
+#  /SETUP — interactive ticket & bot setup
+# ================================================================
+
+class SetupMainView(discord.ui.View):
+    """Main setup menu — shown after /setup."""
+    def __init__(self, interaction: discord.Interaction):
+        super().__init__(timeout=120)
+        self.interaction = interaction
+
+    async def _edit(self, interaction: discord.Interaction, view, text: str):
+        embed = discord.Embed(description=text, color=discord.Color.from_rgb(100, 100, 100))
+        await interaction.response.edit_message(embed=embed, view=view)
+
+    @discord.ui.button(label="🎫 Ticket-Panel senden", style=discord.ButtonStyle.blurple, row=0)
+    async def ticket_panel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._edit(interaction, TicketSetupView(interaction), "**Ticket-Setup** — wähle was du konfigurieren möchtest:")
+
+    @discord.ui.button(label="🔒 Security-Module", style=discord.ButtonStyle.gray, row=0)
+    async def security(self, interaction: discord.Interaction, button: discord.ui.Button):
+        lines = []
+        for m in SECURITY_MODULE_NAMES:
+            status = "✅" if _sec_enabled(interaction.guild.id, m) else "🔴"
+            lines.append(f"{status} `{m}`")
+        view = SecurityToggleView(interaction)
+        embed = discord.Embed(title="Security-Module", description="\n".join(lines),
+                              color=discord.Color.from_rgb(100, 100, 100))
+        await interaction.response.edit_message(embed=embed, view=view)
+
+    @discord.ui.button(label="📋 IDs konfigurieren", style=discord.ButtonStyle.gray, row=1)
+    async def config_ids_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        lines = [f"`{k}` → `{_cfg_get_id(interaction.guild.id, k)}`" for k in _DEFAULT_IDS]
+        embed = discord.Embed(title="Aktuelle IDs", description="\n".join(lines),
+                              color=discord.Color.from_rgb(100, 100, 100))
+        await interaction.response.edit_message(embed=embed, view=ConfigIDView(interaction))
+
+    @discord.ui.button(label="💬 Nachrichten ändern", style=discord.ButtonStyle.gray, row=1)
+    async def config_msgs_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        lines = [f"`{k}` — {v}" for k, v in _MSG_KEYS.items()]
+        embed = discord.Embed(title="Nachrichten", description="\n".join(lines),
+                              color=discord.Color.from_rgb(100, 100, 100))
+        await interaction.response.edit_message(embed=embed, view=ConfigMsgView(interaction))
+
+    @discord.ui.button(label="🤖 Bot-Name/Avatar", style=discord.ButtonStyle.gray, row=1)
+    async def bot_edit_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            description="Nutze `/bot_edit name:<Name> avatar_url:<URL>` um den Bot anzupassen.",
+            color=discord.Color.from_rgb(100, 100, 100))
+        await interaction.response.edit_message(embed=embed, view=None)
+
+
+class TicketSetupView(discord.ui.View):
+    def __init__(self, orig_interaction):
+        super().__init__(timeout=120)
+        self.orig = orig_interaction
+
+    @discord.ui.button(label="📨 Panel senden", style=discord.ButtonStyle.green, row=0)
+    async def send_panel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild   = interaction.guild
+        channel = guild.get_channel(_cfg_get_id(guild.id, "TICKET_PANEL_CHANNEL_ID"))
+        if not channel:
+            return await interaction.response.send_message("Ticket-Panel-Channel nicht gefunden.", ephemeral=True)
+        embed = discord.Embed(
+            title="Support",
+            description="Klicke auf den Button um ein Ticket zu öffnen.\nBleib respektvoll — wir helfen so schnell wie möglich.",
+            color=discord.Color.from_rgb(149, 165, 166),
+        )
+        await channel.send(embed=embed, view=TicketButton())
+        await interaction.response.edit_message(
+            embed=discord.Embed(description=f"✅ Panel in {channel.mention} gesendet.",
+                                color=discord.Color.green()), view=None)
+
+    @discord.ui.button(label="🗂️ Kategorie setzen", style=discord.ButtonStyle.gray, row=0)
+    async def set_category(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(IDChangeModal("TICKET_CATEGORY_ID", "Ticket-Kategorie ID", interaction.guild.id))
+
+    @discord.ui.button(label="📢 Panel-Channel setzen", style=discord.ButtonStyle.gray, row=0)
+    async def set_panel_ch(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(IDChangeModal("TICKET_PANEL_CHANNEL_ID", "Panel-Channel ID", interaction.guild.id))
+
+    @discord.ui.button(label="👥 Support-Rolle setzen", style=discord.ButtonStyle.gray, row=1)
+    async def set_support_role(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(IDChangeModal("SUPPORT_ROLE_ID", "Support-Rollen ID", interaction.guild.id))
+
+    @discord.ui.button(label="⬅️ Zurück", style=discord.ButtonStyle.red, row=1)
+    async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(description="**Setup** — wähle eine Kategorie:",
+                              color=discord.Color.from_rgb(100, 100, 100))
+        await interaction.response.edit_message(embed=embed, view=SetupMainView(interaction))
+
+
+class SecurityToggleView(discord.ui.View):
+    def __init__(self, orig_interaction):
+        super().__init__(timeout=120)
+        self.orig = orig_interaction
+        options = [discord.SelectOption(
+            label=m.replace("_", " ").title(),
+            value=m,
+            description="✅ Aktiv" if _sec_enabled(orig_interaction.guild.id, m) else "🔴 Inaktiv"
+        ) for m in SECURITY_MODULE_NAMES]
+        sel = discord.ui.Select(placeholder="Modul wählen zum Umschalten …", options=options,
+                                min_values=1, max_values=1, custom_id="sec_toggle_sel")
+        sel.callback = self.toggle
+        self.add_item(sel)
+
+    async def toggle(self, interaction: discord.Interaction):
+        module = interaction.data["values"][0]
+        current = _sec_enabled(interaction.guild.id, module)
+        _sec_set(interaction.guild.id, module, not current)
+        new_state = "✅ aktiviert" if not current else "🔴 deaktiviert"
+        await mod_log(interaction.guild, "Modul", f"{interaction.user} hat `{module}` {new_state}.")
+        # Refresh view
+        lines = []
+        for m in SECURITY_MODULE_NAMES:
+            status = "✅" if _sec_enabled(interaction.guild.id, m) else "🔴"
+            lines.append(f"{status} `{m}`")
+        embed = discord.Embed(title="Security-Module", description="\n".join(lines),
+                              color=discord.Color.from_rgb(100, 100, 100))
+        await interaction.response.edit_message(embed=embed, view=SecurityToggleView(interaction))
+
+    @discord.ui.button(label="⬅️ Zurück", style=discord.ButtonStyle.red, row=1)
+    async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(description="**Setup** — wähle eine Kategorie:",
+                              color=discord.Color.from_rgb(100, 100, 100))
+        await interaction.response.edit_message(embed=embed, view=SetupMainView(interaction))
+
+
+class IDChangeModal(discord.ui.Modal):
+    def __init__(self, key: str, label: str, guild_id: int):
+        super().__init__(title=f"{label} ändern")
+        self.key      = key
+        self.guild_id = guild_id
+        self.field = discord.ui.TextInput(
+            label=f"Neue ID für {key}",
+            placeholder="Discord Channel/Rollen-ID …",
+            min_length=17, max_length=20
+        )
+        self.add_item(self.field)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        val = self.field.value.strip()
+        if not val.isdigit():
+            return await interaction.response.send_message("Ungültige ID.", ephemeral=True)
+        _cfg_set_id(self.guild_id, self.key, int(val))
+        globals()[self.key] = int(val)
+        await interaction.response.send_message(f"✅ `{self.key}` → `{val}` gespeichert.", ephemeral=True)
+        await mod_log(interaction.guild, "Config geändert",
+            f"{interaction.user} hat `{self.key}` auf `{val}` gesetzt.")
+
+
+class ConfigIDView(discord.ui.View):
+    def __init__(self, orig_interaction):
+        super().__init__(timeout=120)
+        self.orig = orig_interaction
+        options = [discord.SelectOption(label=k, value=k,
+                   description=str(_cfg_get_id(orig_interaction.guild.id, k))) for k in _DEFAULT_IDS]
+        sel = discord.ui.Select(placeholder="Einstellung wählen …", options=options[:25],
+                                min_values=1, max_values=1, custom_id="cfg_id_sel")
+        sel.callback = self.pick
+        self.add_item(sel)
+
+    async def pick(self, interaction: discord.Interaction):
+        key = interaction.data["values"][0]
+        await interaction.response.send_modal(IDChangeModal(key, key, interaction.guild.id))
+
+    @discord.ui.button(label="⬅️ Zurück", style=discord.ButtonStyle.red, row=1)
+    async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(description="**Setup** — wähle eine Kategorie:",
+                              color=discord.Color.from_rgb(100, 100, 100))
+        await interaction.response.edit_message(embed=embed, view=SetupMainView(interaction))
+
+
+class MsgChangeModal(discord.ui.Modal):
+    def __init__(self, key: str, guild_id: int):
+        super().__init__(title=f"{key} ändern")
+        self.key      = key
+        self.guild_id = guild_id
+        self.field = discord.ui.TextInput(
+            label="Neuer Text",
+            placeholder="Variablen: {mention} {rules}",
+            style=discord.TextStyle.paragraph,
+            max_length=1000,
+            default=_cfg_get_msg(guild_id, key)
+        )
+        self.add_item(self.field)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        _cfg_set_msg(self.guild_id, self.key, self.field.value)
+        await interaction.response.send_message(f"✅ `{self.key}` gespeichert.", ephemeral=True)
+
+
+class ConfigMsgView(discord.ui.View):
+    def __init__(self, orig_interaction):
+        super().__init__(timeout=120)
+        self.orig = orig_interaction
+        options = [discord.SelectOption(label=k, value=k, description=v) for k, v in _MSG_KEYS.items()]
+        sel = discord.ui.Select(placeholder="Nachricht wählen …", options=options,
+                                min_values=1, max_values=1, custom_id="cfg_msg_sel")
+        sel.callback = self.pick
+        self.add_item(sel)
+
+    async def pick(self, interaction: discord.Interaction):
+        key = interaction.data["values"][0]
+        await interaction.response.send_modal(MsgChangeModal(key, interaction.guild.id))
+
+    @discord.ui.button(label="⬅️ Zurück", style=discord.ButtonStyle.red, row=1)
+    async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(description="**Setup** — wähle eine Kategorie:",
+                              color=discord.Color.from_rgb(100, 100, 100))
+        await interaction.response.edit_message(embed=embed, view=SetupMainView(interaction))
+
+
+@bot.tree.command(name="setup", description="Bot-Setup — alles per Klick konfigurieren",
+                  guild=discord.Object(id=ALLOWED_GUILD_ID))
+async def setup_cmd(interaction: discord.Interaction):
+    if interaction.user.id not in OWNERS:
+        return await interaction.response.send_message("Keine Berechtigung.", ephemeral=True)
+    embed = discord.Embed(
+        title="⚙️ Bot-Setup",
+        description=(
+            "Wähle eine Kategorie um den Bot zu konfigurieren:\n\n"
+            "🎫 **Ticket-Panel** — Panel senden, Kategorie/Channel/Rolle setzen\n"
+            "🔒 **Security-Module** — Module an/aus schalten\n"
+            "📋 **IDs** — Alle Channel- und Rollen-IDs ändern\n"
+            "💬 **Nachrichten** — Welcome, Boost usw. anpassen\n"
+            "🤖 **Bot** — Name und Avatar ändern"
+        ),
+        color=discord.Color.from_rgb(100, 100, 100),
+    )
+    await interaction.response.send_message(embed=embed, view=SetupMainView(interaction), ephemeral=True)
 
 # ================================================================
 #  START
