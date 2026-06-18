@@ -1946,68 +1946,6 @@ async def whitelist_list(interaction: discord.Interaction):
     await interaction.response.send_message("**Whitelist:**\n" + "\n".join(names), ephemeral=True)
 
 # ================================================================
-#  HELP COMMAND
-# ================================================================
-
-@bot.command(name="help")
-async def help_cmd(ctx: commands.Context):
-    if ctx.guild.id != ALLOWED_GUILD_ID:
-        return
-    embed = discord.Embed(title="Command-Übersicht", color=discord.Color.from_rgb(149, 165, 166), timestamp=datetime.utcnow())
-    embed.add_field(name="Moderation", value=(
-        "`?kick @user [Grund]`\n"
-        "`?ban @user [Grund]`\n"
-        "`?unban <ID> [Grund]`\n"
-        "`?timeout @user <Zeit> [Grund]` — s m h d\n"
-        "`?rto @user` — Timeout entfernen\n"
-        "`?purge <Anzahl|all>`"
-    ), inline=False)
-    embed.add_field(name="Hackban", value=(
-        "`?hackban @user [Grund]` — Bannt + merkt ID\n"
-        "`?hackban_addalt <HauptID> <AltID>` — Alt verknüpfen\n"
-        "`?unhackban <UserID>` — Hackban aufheben"
-    ), inline=False)
-    embed.add_field(name="Verwarnungen", value=(
-        "`?warn @user [Grund]`\n"
-        "`?warns @user`\n"
-        "`?clearwarn <ID>`\n"
-        "`?clearwarns @user`"
-    ), inline=False)
-    embed.add_field(name="Rollen", value="`?role @user <Name oder ID>`", inline=False)
-    embed.add_field(name="Info", value=(
-        "`/userinfo [@user]`\n"
-        "`/serverinfo`\n"
-        "`/avatar [@user]`"
-    ), inline=False)
-    embed.add_field(name="Invites", value=(
-        "`/invite @user`\n"
-        "`/leaderboard`\n"
-        "`/invites_set @user <Anzahl>`"
-    ), inline=False)
-    embed.add_field(name="Utility", value=(
-        "`/say #channel <Text>`\n"
-        "`/alts [Tage]` — Neue Accounts\n"
-        "`/snipe` — Letzte gelöschte Nachricht\n"
-        "`/afk [Grund]` — AFK setzen"
-    ), inline=False)
-    embed.add_field(name="Tickets", value=(
-        "`?close` — Ticket schließen\n"
-        "`?delete` — Ticket löschen\n"
-        "`/adduser @user`\n"
-        "`/removeuser @user`\n"
-        "`/renameticket <Name>`"
-    ), inline=False)
-    embed.add_field(name="Owner only", value=(
-        "`?setcount <Zahl>`\n"
-        "`?call`\n"
-        "`/send`\n"
-        "`/ticketpanel`\n"
-        "`/whitelist_add|remove|list`"
-    ), inline=False)
-    embed.set_footer(text=f"Angefragt von {ctx.author}")
-    await ctx.send(embed=embed)
-
-# ================================================================
 #  !CALL
 # ================================================================
 
