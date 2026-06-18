@@ -1946,51 +1946,6 @@ async def whitelist_list(interaction: discord.Interaction):
     await interaction.response.send_message("**Whitelist:**\n" + "\n".join(names), ephemeral=True)
 
 # ================================================================
-#  /SEND  (with optional embed, color, image)
-# ================================================================
-
-@bot.tree.command(name="send", description="Nachricht als Bot senden",
-                  guild=discord.Object(id=ALLOWED_GUILD_ID))
-async def send_cmd(
-    interaction: discord.Interaction,
-    channel: discord.TextChannel,
-    message: str,
-    embed: bool = True,
-    color: str = "black",
-    image: bool = False,
-    image_url: str = None,
-):
-    """
-    channel   — Ziel-Channel
-    message   — Nachrichtentext
-    embed     — Als Embed senden (Standard: ja)
-    color     — Embed-Farbe: black, white, red, green, blue
-    image     — Bild anhängen (Standard: nein)
-    image_url — URL des Bildes (wird direkt angezeigt wie eine normale Bild-Nachricht)
-    """
-    if interaction.user.id not in OWNERS:
-        return await interaction.response.send_message("Keine Berechtigung.", ephemeral=True)
-
-    if image and not image_url:
-        return await interaction.response.send_message("Bitte eine `image_url` angeben wenn `image` aktiviert ist.", ephemeral=True)
-
-    try:
-        if embed:
-            emb = discord.Embed(description=message, color=get_color(color))
-            if image and image_url:
-                emb.set_image(url=image_url)
-            await channel.send(embed=emb)
-        else:
-            # Plain text — if image, just send the URL directly so Discord renders it inline
-            content = message
-            if image and image_url:
-                content = f"{message}\n{image_url}" if message else image_url
-            await channel.send(content)
-        await interaction.response.send_message("Gesendet.", ephemeral=True)
-    except Exception as e:
-        await interaction.response.send_message(f"Fehler: {e}", ephemeral=True)
-
-# ================================================================
 #  HELP COMMAND
 # ================================================================
 
