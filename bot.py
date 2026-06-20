@@ -3246,14 +3246,14 @@ async def setup_cmd(interaction: discord.Interaction):
     if interaction.user.id not in OWNERS:
         return await interaction.response.send_message("Keine Berechtigung.", ephemeral=True)
     embed = discord.Embed(
-        title=" Bot-Setup",
+        title="⚙️ Bot-Setup",
         description=(
             "Wähle eine Kategorie um den Bot zu konfigurieren:\n\n"
-            " **Ticket-Panel** — Panel senden, Kategorie/Channel/Rolle setzen\n"
-            " **Security-Module** — Module an/aus schalten\n"
-            " **IDs** — Alle Channel- und Rollen-IDs ändern\n"
-            " **Nachrichten** — Welcome, Boost usw. anpassen\n"
-            " **Bot** — Name und Avatar ändern"
+            "🎫 **Ticket-Panel** — Panel senden, Kategorie/Channel/Rolle setzen\n"
+            "🔒 **Security-Module** — Module an/aus schalten\n"
+            "📋 **IDs** — Alle Channel- und Rollen-IDs ändern\n"
+            "💬 **Nachrichten** — Welcome, Boost usw. anpassen\n"
+            "🤖 **Bot** — Name und Avatar ändern"
         ),
         color=discord.Color.from_rgb(100, 100, 100),
     )
