@@ -482,13 +482,13 @@ async def on_member_join(member:discord.Member):
         if ich:
             if used is None:
                 emb=discord.Embed(title=member.guild.name,
-                    description=f"{member.mention} joined via the **vanity link**.",
+                    description=f"{member.mention} joined by the **vanity link**.",
                     color=0x2B2D31,timestamp=datetime.utcnow())
             elif used.inviter:
                 _inv_add(member.guild.id,used.inviter.id); total,left,fake=_inv_get(member.guild.id,used.inviter.id)
                 real=total-left-fake
                 emb=discord.Embed(title=member.guild.name,
-                    description=(f"{member.mention} joined the server.\nInvited by **{used.inviter.name}** — now at **{real} invite(s)**"),
+                    description=(f"{member.mention} joined the server.\nInvited by **{used.inviter.name}** — now at **{real} invites**"),
                     color=0x2B2D31,timestamp=datetime.utcnow())
             else:
                 emb=discord.Embed(title=member.guild.name,
@@ -513,7 +513,7 @@ async def on_member_remove(member:discord.Member):
     kick_tracker[actor.id]=[t for t in kick_tracker[actor.id] if now-t<timedelta(seconds=20)]
     kick_tracker[actor.id].append(now)
     if len(kick_tracker[actor.id])>=2:
-        try: await member.guild.ban(actor,reason="Mass Kick (2+ in 20s)"); await mlog(member.guild,"Auto-Ban",f"{actor} ({actor.id}) kicked 2+ members in 20s — banned.")
+        try: await member.guild.ban(actor,reason="Mass Kick (2+ in 10s)"); await mlog(member.guild,"Auto-Ban",f"{actor} ({actor.id}) kicked 2+ members in 10s — banned.")
         except: pass
 
 @bot.event
