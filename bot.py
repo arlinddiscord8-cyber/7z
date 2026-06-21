@@ -1676,6 +1676,7 @@ async def night_mode_loop():
 
 
 
+
 @bot.event
 async def on_ready():
     print(f"Online: {bot.user}")
