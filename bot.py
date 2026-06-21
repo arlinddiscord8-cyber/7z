@@ -1675,6 +1675,9 @@ async def night_mode_loop():
         await asyncio.sleep(60)
 
 
+# Register the night-mode loop in on_ready
+_orig_ready = bot.get_listener("on_ready")
+
 @bot.event
 async def on_ready():
     print(f"Online: {bot.user}")
