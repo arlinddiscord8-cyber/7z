@@ -1282,7 +1282,7 @@ async def config_cmd(interaction: discord.Interaction):
     ids = {k: _cid(g.id, k) for k in ["WELCOME_CHANNEL_ID","LOG_CHANNEL_ID","RULES_CHANNEL_ID","BOOST_CHANNEL_ID","INVITE_CHANNEL_ID","AUTO_ROLE_ID","TRIGGER_ROLE_ID","TIMEOUT_ROLE_ID"]}
     desc = ("Bot-Einstellungen über das Menü konfigurieren.\n\n"
             + "\n".join([
-                f"**Willkommens-Kanal** — {f'<#{ids[\"WELCOME_CHANNEL_ID\"]}>' if ids['WELCOME_CHANNEL_ID'] else 'Nicht konfiguriert'}",
+                f"**Willkommens-Kanal** — {f'<#{ids[\"WELCOME_CHANNEL_ID\"]}>' if ids['WELCOME_CHANNEL_ID'] }",
                 f"**Log-Kanal** — {f'<#{ids[\"LOG_CHANNEL_ID\"]}>' if ids['LOG_CHANNEL_ID'] else 'Nicht konfiguriert'}",
                 f"**Regeln-Kanal** — {f'<#{ids[\"RULES_CHANNEL_ID\"]}>' if ids['RULES_CHANNEL_ID'] else 'Nicht konfiguriert'}",
                 f"**Boost-Kanal** — {f'<#{ids[\"BOOST_CHANNEL_ID\"]}>' if ids['BOOST_CHANNEL_ID'] else 'Nicht konfiguriert'}",
