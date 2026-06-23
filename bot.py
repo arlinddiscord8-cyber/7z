@@ -1279,7 +1279,7 @@ async def config_cmd(interaction: discord.Interaction):
         return await interaction.response.send_message("Keine Berechtigung.", ephemeral=True)
     g = interaction.guild
     ids = {k: _cid(g.id, k) for k in ["WELCOME_CHANNEL_ID","LOG_CHANNEL_ID","RULES_CHANNEL_ID","BOOST_CHANNEL_ID","INVITE_CHANNEL_ID","AUTO_ROLE_ID","TRIGGER_ROLE_ID","TIMEOUT_ROLE_ID"]}
-    desc = ("Bot-Einstellungen über das Menü konfigurieren.\n\"\n".join([
+desc = "Bot-Einstellungen über das Menü konfigurieren.\n" + "\n".join([
     f"**Willkommens-Kanal** — {'<#' + str(ids['WELCOME_CHANNEL_ID']) + '>' if ids['WELCOME_CHANNEL_ID'] else 'Nicht konfiguriert'}",
     f"**Log-Kanal** — {'<#' + str(ids['LOG_CHANNEL_ID']) + '>' if ids['LOG_CHANNEL_ID'] else 'Nicht konfiguriert'}",
     f"**Regeln-Kanal** — {'<#' + str(ids['RULES_CHANNEL_ID']) + '>' if ids['RULES_CHANNEL_ID'] else 'Nicht konfiguriert'}",
