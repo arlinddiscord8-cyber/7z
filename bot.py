@@ -1250,7 +1250,7 @@ async def _return_to_config(interaction: discord.Interaction, notice: str = ""):
     g = interaction.guild
     ids = {k: _cid(g.id, k) for k in ["WELCOME_CHANNEL_ID","LOG_CHANNEL_ID","RULES_CHANNEL_ID","BOOST_CHANNEL_ID","INVITE_CHANNEL_ID","AUTO_ROLE_ID","TRIGGER_ROLE_ID","TIMEOUT_ROLE_ID"]}
     desc = ((f"{notice}\n\n" if notice else "") + "Bot-Einstellungen über das Menü konfigurieren.\n\n"
-            + "\n".join([
+             + "\n".join([
                 f"**Willkommens-Kanal** — {f'<#{ids[\"WELCOME_CHANNEL_ID\"]}>' if ids['WELCOME_CHANNEL_ID'] else 'Nicht konfiguriert'}",
                 f"**Log-Kanal** — {f'<#{ids[\"LOG_CHANNEL_ID\"]}>' if ids['LOG_CHANNEL_ID'] else 'Nicht konfiguriert'}",
                 f"**Regeln-Kanal** — {f'<#{ids[\"RULES_CHANNEL_ID\"]}>' if ids['RULES_CHANNEL_ID'] else 'Nicht konfiguriert'}",
