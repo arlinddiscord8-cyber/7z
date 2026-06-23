@@ -1289,7 +1289,7 @@ desc = "Bot-Einstellungen über das Menü konfigurieren.\n" + "\n".join([
     f"**Trigger-Rolle** — {'<@&' + str(ids['TRIGGER_ROLE_ID']) + '>' if ids['TRIGGER_ROLE_ID'] else 'Nicht konfiguriert'}",
     f"**Timeout-Rolle** — {'<@&' + str(ids['TIMEOUT_ROLE_ID']) + '>' if ids['TIMEOUT_ROLE_ID'] else 'Nicht konfiguriert'}",
 ])
-    embed = discord.Embed(title="Bot-Konfiguration", description=desc, color=0x2B2D31)
+    embed = discord.Embed(title="Bot-Konfiguration", description=desc, color=0xFFFFFF)
     embed.set_footer(text=f"Von {interaction.user}", icon_url=interaction.user.display_avatar.url)
     await interaction.response.send_message(embed=embed, view=ConfigMainView(g.id), ephemeral=True)
 
