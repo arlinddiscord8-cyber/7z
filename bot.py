@@ -1279,17 +1279,16 @@ async def config_cmd(interaction: discord.Interaction):
         return await interaction.response.send_message("Keine Berechtigung.", ephemeral=True)
     g = interaction.guild
     ids = {k: _cid(g.id, k) for k in ["WELCOME_CHANNEL_ID","LOG_CHANNEL_ID","RULES_CHANNEL_ID","BOOST_CHANNEL_ID","INVITE_CHANNEL_ID","AUTO_ROLE_ID","TRIGGER_ROLE_ID","TIMEOUT_ROLE_ID"]}
-    desc = ("Bot-Einstellungen über das Menü konfigurieren.\n\n"
-            + "\n".join([
-                f"**Willkommens-Kanal** — {f'<#{ids[\"WELCOME_CHANNEL_ID\"]}>' if ids['WELCOME_CHANNEL_ID'] }",
-                f"**Log-Kanal** — {f'<#{ids[\"LOG_CHANNEL_ID\"]}>' if ids['LOG_CHANNEL_ID'] else 'Nicht konfiguriert'}",
-                f"**Regeln-Kanal** — {f'<#{ids[\"RULES_CHANNEL_ID\"]}>' if ids['RULES_CHANNEL_ID'] else 'Nicht konfiguriert'}",
-                f"**Boost-Kanal** — {f'<#{ids[\"BOOST_CHANNEL_ID\"]}>' if ids['BOOST_CHANNEL_ID'] else 'Nicht konfiguriert'}",
-                f"**Invite-Kanal** — {f'<#{ids[\"INVITE_CHANNEL_ID\"]}>' if ids['INVITE_CHANNEL_ID'] else 'Nicht konfiguriert'}",
-                f"**Auto-Rolle** — {f'<@&{ids[\"AUTO_ROLE_ID\"]}>' if ids['AUTO_ROLE_ID'] else 'Nicht konfiguriert'}",
-                f"**Trigger-Rolle** — {f'<@&{ids[\"TRIGGER_ROLE_ID\"]}>' if ids['TRIGGER_ROLE_ID'] else 'Nicht konfiguriert'}",
-                f"**Timeout-Rolle** — {f'<@&{ids[\"TIMEOUT_ROLE_ID\"]}>' if ids['TIMEOUT_ROLE_ID'] else 'Nicht konfiguriert'}",
-            ]))
+    desc = ("Bot-Einstellungen über das Menü konfigurieren.\n\"\n".join([
+    f"**Willkommens-Kanal** — {'<#' + str(ids['WELCOME_CHANNEL_ID']) + '>' if ids['WELCOME_CHANNEL_ID'] else 'Nicht konfiguriert'}",
+    f"**Log-Kanal** — {'<#' + str(ids['LOG_CHANNEL_ID']) + '>' if ids['LOG_CHANNEL_ID'] else 'Nicht konfiguriert'}",
+    f"**Regeln-Kanal** — {'<#' + str(ids['RULES_CHANNEL_ID']) + '>' if ids['RULES_CHANNEL_ID'] else 'Nicht konfiguriert'}",
+    f"**Boost-Kanal** — {'<#' + str(ids['BOOST_CHANNEL_ID']) + '>' if ids['BOOST_CHANNEL_ID'] else 'Nicht konfiguriert'}",
+    f"**Invite-Kanal** — {'<#' + str(ids['INVITE_CHANNEL_ID']) + '>' if ids['INVITE_CHANNEL_ID'] else 'Nicht konfiguriert'}",
+    f"**Auto-Rolle** — {'<@&' + str(ids['AUTO_ROLE_ID']) + '>' if ids['AUTO_ROLE_ID'] else 'Nicht konfiguriert'}",
+    f"**Trigger-Rolle** — {'<@&' + str(ids['TRIGGER_ROLE_ID']) + '>' if ids['TRIGGER_ROLE_ID'] else 'Nicht konfiguriert'}",
+    f"**Timeout-Rolle** — {'<@&' + str(ids['TIMEOUT_ROLE_ID']) + '>' if ids['TIMEOUT_ROLE_ID'] else 'Nicht konfiguriert'}",
+])
     embed = discord.Embed(title="Bot-Konfiguration", description=desc, color=0x2B2D31)
     embed.set_footer(text=f"Von {interaction.user}", icon_url=interaction.user.display_avatar.url)
     await interaction.response.send_message(embed=embed, view=ConfigMainView(g.id), ephemeral=True)
