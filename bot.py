@@ -609,11 +609,16 @@ async def tracker_cleanup():
     await bot.wait_until_ready()
     while True:
         await asyncio.sleep(10); now=datetime.utcnow()
+        # Normal trackers (list of datetimes)
         for t,w in[(timeout_tracker,15),(kick_tracker,20),(ban_tracker,20),(spam_tracker,SPAM_INTERVAL),
-                   (mention_tracker,10),(invite_link_tracker,30),(mass_ping_tracker,5),
+                   (mention_tracker,10),(invite_link_tracker,30),
                    (channel_create_tracker,CREATE_WIN),(role_create_tracker,CREATE_WIN)]:
             dead=[uid for uid,ts in t.items() if not[x for x in ts if now-x<timedelta(seconds=w)]]
             for uid in dead: del t[uid]
+        # mass_ping_tracker stores (datetime, message) tuples
+        dead=[uid for uid,entries in mass_ping_tracker.items()
+              if not[ts for ts,_ in entries if now-ts<timedelta(seconds=PING_WINDOW)]]
+        for uid in dead: del mass_ping_tracker[uid]
 
 async def voice_loop():
     await bot.wait_until_ready()
@@ -775,28 +780,15 @@ async def on_message(message:discord.Message):
                 return
 
         if _sec(g.id,"anti_mention"):
-            has_mass_ping="@everyone" in message.content or "@here" in message.content
+            # @everyone / @here is handled by _on_message_mass_ping listener (2-ping-in-5s rule)
+            # Here we only handle excessive individual user/role mentions
             total=len(set(u.id for u in message.mentions))+len(message.role_mentions)
-            if has_mass_ping or total>=MENTION_MAX:
-                # Delete the message immediately so it doesn't show
+            if total>=MENTION_MAX and "@everyone" not in message.content and "@here" not in message.content:
                 try: await message.delete()
                 except: pass
-                mass_ping_tracker[message.author.id].append(now)
-                mass_ping_tracker[message.author.id]=[t for t in mass_ping_tracker[message.author.id] if now-t<timedelta(seconds=PING_WINDOW)]
-                if len(mass_ping_tracker[message.author.id])>=PING_MAX:
-                    m = g.get_member(message.author.id)
-                    if m and bot_can_act(g, m):
-                        await _execute_punishment(g, m, "mass_ping",
-                            f"Mass-Ping ({PING_MAX}+ mal in {PING_WINDOW}s)")
-                        await mlog(g,"Auto-Strafe (Mass Ping)",
-                            f"{message.author} ({message.author.id}) hat {len(mass_ping_tracker[message.author.id])}x "
-                            f"in {PING_WINDOW}s gepingt — Strafe: `{_sec_punishment_get(g.id, 'mass_ping')}`")
-                        mass_ping_tracker[message.author.id].clear()
-                    return
-                else:
-                    try: await message.channel.send(f"{message.author.mention} Mass-Pings sind auf diesem Server nicht erlaubt.",delete_after=5)
-                    except: pass
-                    return
+                try: await message.channel.send(f"{message.author.mention} Zu viele Erwähnungen in einer Nachricht.",delete_after=5)
+                except: pass
+                return
 
         if _sec(g.id,"anti_invite") and INVITE_RE.search(message.content):
             try: await message.delete()
@@ -1249,16 +1241,19 @@ class ConfigMainView(discord.ui.View):
 async def _return_to_config(interaction: discord.Interaction, notice: str = ""):
     g = interaction.guild
     ids = {k: _cid(g.id, k) for k in ["WELCOME_CHANNEL_ID","LOG_CHANNEL_ID","RULES_CHANNEL_ID","BOOST_CHANNEL_ID","INVITE_CHANNEL_ID","AUTO_ROLE_ID","TRIGGER_ROLE_ID","TIMEOUT_ROLE_ID"]}
+    def ch(k): return f"<#{ids[k]}>" if ids[k] else "Nicht konfiguriert"
+    def ro(k): return f"<@&{ids[k]}>" if ids[k] else "Nicht konfiguriert"
     desc = ((f"{notice}\n\n" if notice else "") + "Bot-Einstellungen über das Menü konfigurieren.\n\n"
-             + "\n".join([
-         f"**Willkommens-Kanal** — {'<#' + str(ids['WELCOME_CHANNEL_ID']) + '>' if ids['WELCOME_CHANNEL_ID'] else 'Nicht konfiguriert'}",
-               f"**Log-Kanal** — {'<#' + str(ids['LOG_CHANNEL_ID']) + '>' if ids['LOG_CHANNEL_ID'] else 'Nicht konfiguriert'}",
-f"**Regeln-Kanal** — {'<#' + str(ids['RULES_CHANNEL_ID']) + '>' if ids['RULES_CHANNEL_ID'] else 'Nicht konfiguriert'}",
-f"**Boost-Kanal** — {'<#' + str(ids['BOOST_CHANNEL_ID']) + '>' if ids['BOOST_CHANNEL_ID'] else 'Nicht konfiguriert'}",
-f"**Invite-Kanal** — {'<#' + str(ids['INVITE_CHANNEL_ID']) + '>' if ids['INVITE_CHANNEL_ID'] else 'Nicht konfiguriert'}",
-f"**Auto-Rolle** — {'<@&' + str(ids['AUTO_ROLE_ID']) + '>' if ids['AUTO_ROLE_ID'] else 'Nicht konfiguriert'}",
-f"**Trigger-Rolle** — {'<@&' + str(ids['TRIGGER_ROLE_ID']) + '>' if ids['TRIGGER_ROLE_ID'] else 'Nicht konfiguriert'}",
-f"**Timeout-Rolle** — {'<@&' + str(ids['TIMEOUT_ROLE_ID']) + '>' if ids['TIMEOUT_ROLE_ID'] else 'Nicht konfiguriert'}",    ]))
+            + "\n".join([
+                f"**Willkommens-Kanal** — {ch('WELCOME_CHANNEL_ID')}",
+                f"**Log-Kanal** — {ch('LOG_CHANNEL_ID')}",
+                f"**Regeln-Kanal** — {ch('RULES_CHANNEL_ID')}",
+                f"**Boost-Kanal** — {ch('BOOST_CHANNEL_ID')}",
+                f"**Invite-Kanal** — {ch('INVITE_CHANNEL_ID')}",
+                f"**Auto-Rolle** — {ro('AUTO_ROLE_ID')}",
+                f"**Trigger-Rolle** — {ro('TRIGGER_ROLE_ID')}",
+                f"**Timeout-Rolle** — {ro('TIMEOUT_ROLE_ID')}",
+            ]))
     embed = discord.Embed(title="Bot-Konfiguration", description=desc, color=0x2B2D31)
     embed.set_footer(text=f"Von {interaction.user}", icon_url=interaction.user.display_avatar.url)
     await interaction.response.edit_message(embed=embed, view=ConfigMainView(g.id))
@@ -1277,24 +1272,25 @@ class _ConfigTextModal(discord.ui.Modal):
 async def config_cmd(interaction: discord.Interaction):
     if interaction.user.id not in OWNERS:
         return await interaction.response.send_message("Keine Berechtigung.", ephemeral=True)
-
     g = interaction.guild
     ids = {k: _cid(g.id, k) for k in ["WELCOME_CHANNEL_ID","LOG_CHANNEL_ID","RULES_CHANNEL_ID","BOOST_CHANNEL_ID","INVITE_CHANNEL_ID","AUTO_ROLE_ID","TRIGGER_ROLE_ID","TIMEOUT_ROLE_ID"]}
-
-    desc = "Bot-Einstellungen über das Menü konfigurieren.\n" + "\n".join([
-        f"**Willkommens-Kanal** — {'<#' + str(ids['WELCOME_CHANNEL_ID']) + '>' if ids['WELCOME_CHANNEL_ID'] else 'Nicht konfiguriert'}",
-        f"**Log-Kanal** — {'<#' + str(ids['LOG_CHANNEL_ID']) + '>' if ids['LOG_CHANNEL_ID'] else 'Nicht konfiguriert'}",
-        f"**Regeln-Kanal** — {'<#' + str(ids['RULES_CHANNEL_ID']) + '>' if ids['RULES_CHANNEL_ID'] else 'Nicht konfiguriert'}",
-        f"**Boost-Kanal** — {'<#' + str(ids['BOOST_CHANNEL_ID']) + '>' if ids['BOOST_CHANNEL_ID'] else 'Nicht konfiguriert'}",
-        f"**Invite-Kanal** — {'<#' + str(ids['INVITE_CHANNEL_ID']) + '>' if ids['INVITE_CHANNEL_ID'] else 'Nicht konfiguriert'}",
-        f"**Auto-Rolle** — {'<@&' + str(ids['AUTO_ROLE_ID']) + '>' if ids['AUTO_ROLE_ID'] else 'Nicht konfiguriert'}",
-        f"**Trigger-Rolle** — {'<@&' + str(ids['TRIGGER_ROLE_ID']) + '>' if ids['TRIGGER_ROLE_ID'] else 'Nicht konfiguriert'}",
-        f"**Timeout-Rolle** — {'<@&' + str(ids['TIMEOUT_ROLE_ID']) + '>' if ids['TIMEOUT_ROLE_ID'] else 'Nicht konfiguriert'}",
-    ])
-
-    embed = discord.Embed(title="Bot-Konfiguration", description=desc, color=0xFFFFFF)
+    def ch(k): return f"<#{ids[k]}>" if ids[k] else "Nicht konfiguriert"
+    def ro(k): return f"<@&{ids[k]}>" if ids[k] else "Nicht konfiguriert"
+    desc = ("Bot-Einstellungen über das Menü konfigurieren.\n\n"
+            + "\n".join([
+                f"**Willkommens-Kanal** — {ch('WELCOME_CHANNEL_ID')}",
+                f"**Log-Kanal** — {ch('LOG_CHANNEL_ID')}",
+                f"**Regeln-Kanal** — {ch('RULES_CHANNEL_ID')}",
+                f"**Boost-Kanal** — {ch('BOOST_CHANNEL_ID')}",
+                f"**Invite-Kanal** — {ch('INVITE_CHANNEL_ID')}",
+                f"**Auto-Rolle** — {ro('AUTO_ROLE_ID')}",
+                f"**Trigger-Rolle** — {ro('TRIGGER_ROLE_ID')}",
+                f"**Timeout-Rolle** — {ro('TIMEOUT_ROLE_ID')}",
+            ]))
+    embed = discord.Embed(title="Bot-Konfiguration", description=desc, color=0x2B2D31)
     embed.set_footer(text=f"Von {interaction.user}", icon_url=interaction.user.display_avatar.url)
     await interaction.response.send_message(embed=embed, view=ConfigMainView(g.id), ephemeral=True)
+
 # ================================================================
 #  TICKET MANAGEMENT COMMANDS
 # ================================================================
@@ -2428,33 +2424,39 @@ async def _on_message_mass_ping(message: discord.Message):
     if whitelisted(message.author): return
     if not ("@everyone" in message.content or "@here" in message.content): return
 
-    # Delete the message immediately so the ping never goes through
-    try:
-        await message.delete()
-    except: pass
-
     now = datetime.utcnow()
-    mass_ping_tracker[message.author.id].append(now)
-    mass_ping_tracker[message.author.id] = [
-        t for t in mass_ping_tracker[message.author.id]
+    uid = message.author.id
+
+    # Track this ping, clean up expired entries
+    mass_ping_tracker[uid].append((now, message))
+    mass_ping_tracker[uid] = [
+        (t, msg) for t, msg in mass_ping_tracker[uid]
         if now - t < timedelta(seconds=PING_WINDOW)]
 
-    if len(mass_ping_tracker[message.author.id]) >= PING_MAX:
-        m = message.guild.get_member(message.author.id)
-        if m and bot_can_act(message.guild, m):
-            await _execute_punishment(message.guild, m, "mass_ping",
-                f"Mass-Ping ({PING_MAX}+ @everyone/@here in {PING_WINDOW}s)")
-            punishment = _sec_punishment_get(message.guild.id, "mass_ping")
-            await mlog(message.guild, "Auto-Strafe (Mass Ping)",
-                f"{m} ({m.id}) hat {len(mass_ping_tracker[m.id])}x in {PING_WINDOW}s "
-                f"@everyone/@here gesendet — Strafe: `{punishment}` | Nachricht blockiert.")
-        mass_ping_tracker[message.author.id].clear()
-    else:
+    count = len(mass_ping_tracker[uid])
+
+    # Under threshold: do nothing, message goes through normally
+    if count < PING_MAX:
+        return
+
+    # Threshold reached (2+ pings in PING_WINDOW seconds):
+    # delete ALL tracked messages from this window, then punish once
+    for _t, tracked_msg in list(mass_ping_tracker[uid]):
         try:
-            await message.channel.send(
-                f"{message.author.mention} Mass-Pings (@everyone/@here) sind auf diesem Server nicht erlaubt.",
-                delete_after=5)
+            await tracked_msg.delete()
         except: pass
+
+    # Reset tracker so the next window starts fresh after punishment
+    mass_ping_tracker[uid].clear()
+
+    member = message.guild.get_member(uid)
+    if member and bot_can_act(message.guild, member):
+        await _execute_punishment(message.guild, member, "mass_ping",
+            f"Mass-Ping ({count}x @everyone/@here innerhalb von {PING_WINDOW}s)")
+        punishment = _sec_punishment_get(message.guild.id, "mass_ping")
+        await mlog(message.guild, "Auto-Strafe (Mass Ping)",
+            f"{member} ({member.id}) hat **{count}x** in {PING_WINDOW}s "
+            f"@everyone/@here gesendet — Strafe: `{punishment}` | {count} Nachrichten gelöscht.")
 
 bot.add_listener(_on_message_mass_ping, "on_message")
 
