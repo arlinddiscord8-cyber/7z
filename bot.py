@@ -137,15 +137,27 @@ _ID_DEF={
 }
 _MSG_DEF={
     "WELCOME_MSG":"Hey {mention},\n\nWelcome to **Corazon**!\nPlease read the rules: <#{rules}>\n\n- Be respectful\n- Have fun!",
-    "BOOST_MSG":"thank you 🖤",
+    "BOOST_MSG":"thank you ",
     "TICKET_PANEL_DESC":"Click the button below to open a support ticket.",
     "TICKET_OPEN_MSG":"Please describe your issue and a staff member will assist you shortly.",
+    "INVITE_VANITY_MSG":"**{member}** ist über den **Vanity-Link** beigetreten.",
+    "INVITE_KNOWN_MSG":"**{member}** ist dem Server beigetreten.\nEingeladen von **{inviter}** — jetzt **{real} Einladungen**.",
+    "INVITE_UNKNOWN_MSG":"**{member}** ist beigetreten. Einladender unbekannt.",
+    "FIRST_REACT_MSG":"{mention} war der Erste! 🏆",
+    "TICKET_CLOSE_MSG":"Dieses Ticket wurde geschlossen. Nur Staff-Mitglieder können diesen Kanal sehen.",
+    "TICKET_DELETE_MSG":"Dieses Ticket wird in 3 Sekunden gelöscht.",
 }
 _MSG_LABELS={
-    "WELCOME_MSG":"Welcome Message ({mention} {rules})",
-    "BOOST_MSG":"Boost Message",
-    "TICKET_PANEL_DESC":"Ticket Panel Description",
-    "TICKET_OPEN_MSG":"Message sent when a ticket is opened",
+    "WELCOME_MSG":"Willkommensnachricht",
+    "BOOST_MSG":"Boost-Nachricht",
+    "TICKET_PANEL_DESC":"Ticket-Panel Text",
+    "TICKET_OPEN_MSG":"Ticket-Öffnungsnachricht",
+    "INVITE_VANITY_MSG":"Invite-Tracking: Vanity-Link",
+    "INVITE_KNOWN_MSG":"Invite-Tracking: Bekannter Einlader",
+    "INVITE_UNKNOWN_MSG":"Invite-Tracking: Unbekannter Einlader",
+    "FIRST_REACT_MSG":"Erste Reaktion (Activity-Check)",
+    "TICKET_CLOSE_MSG":"Ticket geschlossen (Nachricht)",
+    "TICKET_DELETE_MSG":"Ticket wird gelöscht (Nachricht)",
 }
 
 def _cid(g,k): _cur.execute("SELECT value FROM cfg_ids WHERE guild_id=? AND key=?",(g,k)); r=_cur.fetchone(); return r[0] if r else _ID_DEF.get(k,0)
@@ -355,7 +367,7 @@ async def do_night_off(guild: discord.Guild):
             changed.append(role.name)
         except: pass
     if changed:
-        await mlog(guild, "🌙 Night Mode AKTIVIERT",
+        await mlog(guild, " Night Mode AKTIVIERT",
             f"Berechtigungen der folgenden Rollen wurden **entfernt**: {', '.join(f'`{n}`' for n in changed)}\n"
             f"Wiederherstellung automatisch um **09:00 Uhr Berlin**.")
 
@@ -385,7 +397,7 @@ async def do_night_on(guild: discord.Guild):
     if no_save:
         lines.append(f"Keine gespeicherten Berechtigungen für: {', '.join(f'`{n}`' for n in no_save)}")
     if lines:
-        await mlog(guild, "☀️ Night Mode DEAKTIVIERT", "\n".join(lines))
+        await mlog(guild, " Night Mode DEAKTIVIERT", "\n".join(lines))
 
 async def night_mode_loop():
     await bot.wait_until_ready()
@@ -437,25 +449,25 @@ class NightModeManualView(discord.ui.View):
         self.guild = guild
         self.selected_roles: list[int] = []
 
-    @discord.ui.button(label="🌙 Night Mode AKTIVIEREN", style=discord.ButtonStyle.danger, row=0)
+    @discord.ui.button(label=" Night Mode AKTIVIEREN", style=discord.ButtonStyle.danger, row=0)
     async def turn_off(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id not in OWNERS:
             return await interaction.response.send_message("Keine Berechtigung.", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
         await do_night_off(self.guild)
         await interaction.followup.send(
-            "✅ **Night Mode wurde AKTIVIERT.**\n"
+            " **Night Mode wurde AKTIVIERT.**\n"
             "Die Berechtigungen der konfigurierten Rollen wurden **entfernt** und gespeichert.\n"
             "Sie werden automatisch um **09:00 Uhr (Berlin)** wiederhergestellt.", ephemeral=True)
 
-    @discord.ui.button(label="☀️ Night Mode DEAKTIVIEREN", style=discord.ButtonStyle.success, row=0)
+    @discord.ui.button(label=" Night Mode DEAKTIVIEREN", style=discord.ButtonStyle.success, row=0)
     async def turn_on(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id not in OWNERS:
             return await interaction.response.send_message("Keine Berechtigung.", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
         await do_night_on(self.guild)
         await interaction.followup.send(
-            "✅ **Night Mode wurde DEAKTIVIERT.**\n"
+            " **Night Mode wurde DEAKTIVIERT.**\n"
             "Die gespeicherten Berechtigungen der konfigurierten Rollen wurden **wiederhergestellt**.", ephemeral=True)
 
     @discord.ui.button(label="⏸ Auto-NightMode pausieren", style=discord.ButtonStyle.secondary, row=0)
@@ -465,12 +477,12 @@ class NightModeManualView(discord.ui.View):
         current = _night_mode_get_enabled(self.guild.id)
         new_val = not current
         _night_mode_set_enabled(self.guild.id, new_val)
-        status = "**aktiviert** ✅" if new_val else "**pausiert** ⏸"
+        status = "**aktiviert** " if new_val else "**pausiert** ⏸"
         await interaction.response.send_message(
             f"Automatischer Night Mode wurde {status}.\n"
             f"{'Der Bot schaltet nun automatisch um 22:00 und 09:00 Uhr.' if new_val else 'Der Bot schaltet NICHT mehr automatisch — manuelle Steuerung möglich.'}", ephemeral=True)
 
-    @discord.ui.button(label="➕ Rolle hinzufügen", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label=" Rolle hinzufügen", style=discord.ButtonStyle.secondary, row=1)
     async def add_role(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id not in OWNERS:
             return await interaction.response.send_message("Keine Berechtigung.", ephemeral=True)
@@ -494,7 +506,7 @@ class NightModeManualView(discord.ui.View):
                 added_info.append(f"**{role.name}** — gespeicherte Perms: `{perm_preview}`")
             msg = "\n".join(added_info) if added_info else "Keine Rollen hinzugefügt."
             await i2.response.edit_message(
-                content=f"✅ **Rollen zum Night Mode hinzugefügt:**\n{msg}\n\n"
+                content=f" **Rollen zum Night Mode hinzugefügt:**\n{msg}\n\n"
                         f"Die aktuellen Berechtigungen wurden **sofort gespeichert**.\n"
                         f"Um 22:00 Uhr werden sie entfernt, um 09:00 Uhr wiederhergestellt.", view=None)
 
@@ -503,7 +515,7 @@ class NightModeManualView(discord.ui.View):
         view.add_item(btn)
         await interaction.response.send_message("Rolle(n) für Night Mode auswählen:", view=view, ephemeral=True)
 
-    @discord.ui.button(label="➖ Rolle entfernen", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label=" Rolle entfernen", style=discord.ButtonStyle.secondary, row=1)
     async def remove_role(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id not in OWNERS:
             return await interaction.response.send_message("Keine Berechtigung.", ephemeral=True)
@@ -528,13 +540,13 @@ class NightModeManualView(discord.ui.View):
                     removed.append(r.name if r else rid)
                     _night_saved_perms.pop(int(rid), None)
                     _night_perms_delete_db(i2.guild.id, int(rid))
-            await i2.response.edit_message(content=f"✅ Entfernt: {', '.join(f'`{n}`' for n in removed)}", view=None)
+            await i2.response.edit_message(content=f" Entfernt: {', '.join(f'`{n}`' for n in removed)}", view=None)
 
         sel.callback = do_remove
         view.add_item(sel)
         await interaction.response.send_message("Rollen zum Entfernen auswählen:", view=view, ephemeral=True)
 
-    @discord.ui.button(label="📋 Aktuelle Rollen anzeigen", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label=" Aktuelle Rollen anzeigen", style=discord.ButtonStyle.secondary, row=1)
     async def list_roles(self, interaction: discord.Interaction, button: discord.ui.Button):
         current_ids = _night_roles_get(interaction.guild.id) or NIGHT_MODE_ROLES
         auto_enabled = _night_mode_get_enabled(self.guild.id)
@@ -543,11 +555,11 @@ class NightModeManualView(discord.ui.View):
             role = interaction.guild.get_role(rid)
             # Check if perms are saved (= night mode is currently ON for this role)
             has_saved = rid in _night_saved_perms or _night_perms_load_db(self.guild.id, rid) is not None
-            status = "🌙 Perms entfernt (Night Mode aktiv)" if has_saved else "☀️ Perms aktiv (Normal)"
+            status = " Perms entfernt (Night Mode aktiv)" if has_saved else " Perms aktiv (Normal)"
             lines.append(f"- {role.mention if role else f'Unbekannte Rolle (`{rid}`)'} — {status}")
-        auto_status = "✅ Aktiviert (22:00 OFF / 09:00 ON)" if auto_enabled else "⏸ Pausiert (manuell)"
+        auto_status = " Aktiviert (22:00 OFF / 09:00 ON)" if auto_enabled else "⏸ Pausiert (manuell)"
         embed = discord.Embed(
-            title="🌙 Night Mode — Konfigurierte Rollen",
+            title=" Night Mode — Konfigurierte Rollen",
             description=(
                 f"**Automatik:** {auto_status}\n\n" +
                 ("\n".join(lines) if lines else "Keine Rollen konfiguriert.")
@@ -570,13 +582,13 @@ async def nightmode_cmd(interaction: discord.Interaction):
     for rid in current_ids:
         role = guild.get_role(rid)
         has_saved = rid in _night_saved_perms or _night_perms_load_db(guild.id, rid) is not None
-        nm_status = "🌙 aktiv" if has_saved else "☀️ normal"
+        nm_status = " aktiv" if has_saved else " normal"
         role_lines.append(f"- {role.mention if role else f'`{rid}`'} ({nm_status})")
 
-    auto_status = "✅ Automatik AN" if auto_enabled else "⏸ Automatik PAUSIERT"
+    auto_status = " Automatik AN" if auto_enabled else "⏸ Automatik PAUSIERT"
 
     embed = discord.Embed(
-        title="🌙 Night Mode",
+        title=" Night Mode",
         description=(
             f"**Status:** {auto_status}\n\n"
             "**Was macht Night Mode?**\n"
@@ -586,10 +598,10 @@ async def nightmode_cmd(interaction: discord.Interaction):
             "**Konfigurierte Rollen:**\n" +
             ("\n".join(role_lines) if role_lines else "Keine") +
             "\n\n**Buttons unten:**\n"
-            "🌙 **Aktivieren** = Perms jetzt entfernen (Night Mode an)\n"
-            "☀️ **Deaktivieren** = Perms jetzt wiederherstellen (Night Mode aus)\n"
+            " **Aktivieren** = Perms jetzt entfernen (Night Mode an)\n"
+            " **Deaktivieren** = Perms jetzt wiederherstellen (Night Mode aus)\n"
             "⏸ **Pausieren** = Automatik ein-/ausschalten\n"
-            "➕ **Rolle hinzufügen** = Rolle mit aktuellen Perms zum Night Mode hinzufügen\n"
+            " **Rolle hinzufügen** = Rolle mit aktuellen Perms zum Night Mode hinzufügen\n"
             "Die Perms der Rolle werden **sofort beim Hinzufügen gespeichert**."
         ),
         color=0x2B2D31)
@@ -690,17 +702,17 @@ async def on_member_join(member:discord.Member):
         if ich:
             if used is None:
                 emb=discord.Embed(title=member.guild.name,
-                    description=f"{member.mention} ist über den **Vanity-Link** beigetreten.",
+                    description=_cmsg(member.guild.id,"INVITE_VANITY_MSG").format(member=str(member),mention=member.mention),
                     color=0x2B2D31,timestamp=datetime.utcnow())
             elif used.inviter:
                 _inv_add(member.guild.id,used.inviter.id); total,left,fake=_inv_get(member.guild.id,used.inviter.id)
                 real=total-left-fake
                 emb=discord.Embed(title=member.guild.name,
-                    description=(f"{member.mention} ist dem Server beigetreten.\nEingeladen von **{used.inviter.name}** — jetzt **{real} Einladungen**"),
+                    description=_cmsg(member.guild.id,"INVITE_KNOWN_MSG").format(member=str(member),mention=member.mention,inviter=used.inviter.name,real=real),
                     color=0x2B2D31,timestamp=datetime.utcnow())
             else:
                 emb=discord.Embed(title=member.guild.name,
-                    description=f"{member.mention} ist beigetreten. Einladender unbekannt.",
+                    description=_cmsg(member.guild.id,"INVITE_UNKNOWN_MSG").format(member=str(member),mention=member.mention),
                     color=0x2B2D31,timestamp=datetime.utcnow())
             emb.set_thumbnail(url=member.display_avatar.url)
             await ich.send(embed=emb,allowed_mentions=discord.AllowedMentions(users=True))
@@ -731,7 +743,9 @@ async def on_member_update(before:discord.Member,after:discord.Member):
     if not before.premium_since and after.premium_since:
         ch=after.guild.get_channel(_cid(after.guild.id,"BOOST_CHANNEL_ID"))
         if ch:
-            try: await ch.send(_cmsg(after.guild.id,"BOOST_MSG"))
+            try:
+                await asyncio.sleep(5)
+                await ch.send(_cmsg(after.guild.id,"BOOST_MSG"))
             except: pass
     b={r.id for r in before.roles}; a={r.id for r in after.roles}
     tr=_cid(after.guild.id,"TRIGGER_ROLE_ID")
@@ -877,7 +891,9 @@ async def on_reaction_add(reaction:discord.Reaction,user:discord.User):
     mid=reaction.message.id
     if mid in first_react_announced: return
     first_react_announced.add(mid)
-    try: await reaction.message.channel.send(f"{user.mention} war der Erste!",allowed_mentions=discord.AllowedMentions(users=True))
+    try:
+        msg = _cmsg(reaction.message.guild.id,"FIRST_REACT_MSG").format(mention=user.mention,user=str(user))
+        await reaction.message.channel.send(msg,allowed_mentions=discord.AllowedMentions(users=True))
     except: pass
 
 # ================================================================
@@ -908,7 +924,7 @@ class TicketActionView(View):
             if sr:
                 await interaction.channel.set_permissions(sr, read_messages=True, send_messages=True)
             embed = discord.Embed(
-                description="Dieses Ticket wurde geschlossen. Nur Staff-Mitglieder können diesen Kanal sehen.",
+                description=_cmsg(interaction.guild.id,"TICKET_CLOSE_MSG"),
                 color=0x2B2D31)
             await interaction.channel.send(embed=embed, view=TicketDeleteView())
         except Exception as e:
@@ -919,7 +935,7 @@ class TicketActionView(View):
         if not can_ticket(interaction.user):
             return await interaction.response.send_message("Du hast keine Berechtigung, Tickets zu löschen.", ephemeral=True)
         await interaction.response.defer()
-        embed = discord.Embed(description="Dieses Ticket wird in 3 Sekunden gelöscht.", color=0x2B2D31)
+        embed = discord.Embed(description=_cmsg(interaction.guild.id,"TICKET_DELETE_MSG"), color=0x2B2D31)
         try:
             await interaction.channel.send(embed=embed)
         except: pass
@@ -938,7 +954,7 @@ class TicketDeleteView(View):
         if not can_ticket(interaction.user):
             return await interaction.response.send_message("Du hast keine Berechtigung, Tickets zu löschen.", ephemeral=True)
         await interaction.response.defer()
-        embed = discord.Embed(description="Dieses Ticket wird in 3 Sekunden gelöscht.", color=0x2B2D31)
+        embed = discord.Embed(description=_cmsg(interaction.guild.id,"TICKET_DELETE_MSG"), color=0x2B2D31)
         try:
             await interaction.channel.send(embed=embed)
         except: pass
@@ -1007,7 +1023,7 @@ async def close(ctx: commands.Context):
         if sr:
             await ctx.channel.set_permissions(sr, read_messages=True, send_messages=True)
         embed = discord.Embed(
-            description="Dieses Ticket wurde geschlossen. Nur Staff-Mitglieder können diesen Kanal sehen.",
+            description=_cmsg(ctx.guild.id,"TICKET_CLOSE_MSG"),
             color=0x2B2D31)
         await ctx.send(embed=embed)
     except Exception as e:
@@ -1020,7 +1036,7 @@ async def delete_ticket(ctx: commands.Context):
         return await ctx.send("Du hast keine Berechtigung, Tickets zu löschen.")
     try: await ctx.message.delete()
     except: pass
-    embed = discord.Embed(description="Dieses Ticket wird in 3 Sekunden gelöscht.", color=0x2B2D31)
+    embed = discord.Embed(description=_cmsg(ctx.guild.id,"TICKET_DELETE_MSG"), color=0x2B2D31)
     try: await ctx.send(embed=embed)
     except: pass
     await asyncio.sleep(3)
@@ -1354,15 +1370,15 @@ class SecurityConfigView(discord.ui.View):
 
         pun_view = PunishmentSelectView(self.guild_id, event, label, current)
         embed = discord.Embed(
-            title=f"🔧 Security Config — {label}",
+            title=f" Security Config — {label}",
             description=(
                 f"**Aktuell:** `{current}`\n\n"
                 "**Strafe auswählen:**\n"
-                "🚫 `none` — Nur blockieren/löschen, keine Strafe\n"
-                "🧹 `clear_roles` — Alle Rollen entfernen\n"
+                " `none` — Nur blockieren/löschen, keine Strafe\n"
+                " `clear_roles` — Alle Rollen entfernen\n"
                 "⏱ `timeout` — Timeout (5 Minuten)\n"
-                "👢 `kick` — Vom Server kicken\n"
-                "🔨 `ban` — Vom Server bannen"
+                " `kick` — Vom Server kicken\n"
+                " `ban` — Vom Server bannen"
             ),
             color=0x2B2D31
         )
@@ -1379,11 +1395,11 @@ class PunishmentSelectView(discord.ui.View):
     @discord.ui.select(
         placeholder="Strafe auswählen...",
         options=[
-            discord.SelectOption(label="🚫 Keine Strafe (nur blockieren)", value="none"),
-            discord.SelectOption(label="🧹 Rollen entfernen (clear_roles)", value="clear_roles"),
+            discord.SelectOption(label=" Keine Strafe (nur blockieren)", value="none"),
+            discord.SelectOption(label=" Rollen entfernen (clear_roles)", value="clear_roles"),
             discord.SelectOption(label="⏱ Timeout", value="timeout"),
-            discord.SelectOption(label="👢 Kick", value="kick"),
-            discord.SelectOption(label="🔨 Ban", value="ban"),
+            discord.SelectOption(label=" Kick", value="kick"),
+            discord.SelectOption(label=" Ban", value="ban"),
         ],
         min_values=1, max_values=1,
         custom_id="sec_cfg_pun_sel"
@@ -1394,7 +1410,7 @@ class PunishmentSelectView(discord.ui.View):
         await mlog(interaction.guild, "Security Config",
                    f"{interaction.user} hat die Strafe für **{self.event_label}** auf `{new_pun}` gesetzt.")
         await _return_to_sec_config(interaction,
-            f"✅ Strafe für **{self.event_label}** wurde auf `{new_pun}` gesetzt.")
+            f" Strafe für **{self.event_label}** wurde auf `{new_pun}` gesetzt.")
 
     @discord.ui.button(label="← Zurück", style=discord.ButtonStyle.secondary, row=1)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1406,15 +1422,15 @@ async def _return_to_sec_config(interaction: discord.Interaction, notice: str = 
     for event, label in SEC_PUNISHMENT_LABELS.items():
         current = _sec_punishment_get(g.id, event)
         default = SEC_PUNISHMENT_DEFAULTS.get(event, "ban")
-        marker = "" if current == default else " ✏️"
+        marker = "" if current == default else " "
         lines.append(f"`{current}`{marker} — {label}")
 
     embed = discord.Embed(
-        title="🔧 Security Config — Strafen",
+        title=" Security Config — Strafen",
         description=(
             (f"{notice}\n\n" if notice else "") +
             "Hier kannst du für jedes Security-Event die Strafe einstellen.\n"
-            "✏️ = von Standard abweichend\n\n" +
+            " = von Standard abweichend\n\n" +
             "\n".join(lines)
         ),
         color=0x2B2D31
@@ -1433,15 +1449,15 @@ async def security_config_cmd(interaction: discord.Interaction):
     for event, label in SEC_PUNISHMENT_LABELS.items():
         current = _sec_punishment_get(g.id, event)
         default = SEC_PUNISHMENT_DEFAULTS.get(event, "ban")
-        marker = "" if current == default else " ✏️"
+        marker = "" if current == default else " "
         lines.append(f"`{current}`{marker} — {label}")
 
     embed = discord.Embed(
-        title="🔧 Security Config — Strafen",
+        title=" Security Config — Strafen",
         description=(
             "Hier kannst du für jedes Security-Event die Strafe einstellen.\n"
             "Wähle ein Event aus dem Dropdown, um die Strafe zu ändern.\n"
-            "✏️ = von Standard abweichend\n\n" +
+            " = von Standard abweichend\n\n" +
             "\n".join(lines)
         ),
         color=0x2B2D31
@@ -1817,7 +1833,7 @@ async def leaderboard_cmd(interaction:discord.Interaction):
     top=_inv_top(interaction.guild.id)
     if not top: return await interaction.response.send_message("Noch keine Einladungsdaten vorhanden.",ephemeral=True)
     embed=discord.Embed(title="Einladungs-Leaderboard",color=0x2B2D31,timestamp=datetime.utcnow())
-    medals={1:"🥇",2:"🥈",3:"🥉"}
+    medals={1:"",2:"",3:""}
     for i,(uid,total,left,fake) in enumerate(top,1):
         u=bot.get_user(uid); real=total-left-fake
         embed.add_field(name=f"{medals.get(i,f'{i}.')} {u.name if u else uid}",value=f"**{real}** Einladung(en) ({total} gesamt · {left} verlassen · {fake} fake)",inline=False)
@@ -2367,8 +2383,8 @@ async def help_cmd(ctx:commands.Context):
         "`/setup` — Ticket-System konfigurieren"),inline=False)
     embed.add_field(name="Night Mode",value=(
         "`/nightmode` — Manuell steuern oder Rollen konfigurieren\n"
-        "🌙 22:00 Uhr: Rollen-Perms entfernt\n"
-        "☀️ 09:00 Uhr: Rollen-Perms wiederhergestellt\n"
+        " 22:00 Uhr: Rollen-Perms entfernt\n"
+        " 09:00 Uhr: Rollen-Perms wiederhergestellt\n"
         "Perms werden **beim Hinzufügen** gespeichert."),inline=False)
     embed.add_field(name="Security",value=(
         "`/enable <modul>` `/disable <modul>` `/modules`\n"
@@ -2523,6 +2539,286 @@ async def role_for_all_channels(interaction:discord.Interaction,role:discord.Rol
         color=0x2B2D31)
     view=RoleAllChannelsView(role)
     await interaction.response.send_message(embed=embed,view=view,ephemeral=True)
+
+# ================================================================
+#  /messages — Alle Bot-Nachrichten konfigurieren
+# ================================================================
+
+# Metadata for every configurable message
+_ALL_MESSAGES = [
+    {
+        "key": "WELCOME_MSG",
+        "label": "Willkommensnachricht",
+        "desc": "Gesendet wenn ein neues Mitglied beitritt.",
+        "vars": "{mention}  {rules}",
+        "channel_key": "WELCOME_CHANNEL_ID",
+        "example": "Hey {mention}, willkommen! Lies die Regeln: <#{rules}>",
+    },
+    {
+        "key": "BOOST_MSG",
+        "label": "Boost-Nachricht",
+        "desc": "Gesendet nach 5 Sekunden wenn jemand boosted.",
+        "vars": "Keine Variablen",
+        "channel_key": "BOOST_CHANNEL_ID",
+        "example": "thank you ",
+    },
+    {
+        "key": "TICKET_PANEL_DESC",
+        "label": "Ticket-Panel Text",
+        "desc": "Text im Ticket-Panel Embed.",
+        "vars": "Keine Variablen",
+        "channel_key": "TICKET_PANEL_CHANNEL_ID",
+        "example": "Klicke den Button um ein Ticket zu öffnen.",
+    },
+    {
+        "key": "TICKET_OPEN_MSG",
+        "label": "Ticket-Öffnungsnachricht",
+        "desc": "Wird im Ticket gesendet sobald es geöffnet wird.",
+        "vars": "Keine Variablen",
+        "channel_key": "TICKET_CATEGORY_ID",
+        "example": "Bitte beschreibe dein Anliegen.",
+    },
+    {
+        "key": "TICKET_CLOSE_MSG",
+        "label": "Ticket-Schließen Nachricht",
+        "desc": "Wird gesendet wenn ein Ticket geschlossen wird.",
+        "vars": "Keine Variablen",
+        "channel_key": "TICKET_CATEGORY_ID",
+        "example": "Dieses Ticket wurde geschlossen.",
+    },
+    {
+        "key": "TICKET_DELETE_MSG",
+        "label": "Ticket-Löschen Nachricht",
+        "desc": "Wird kurz vor dem Löschen eines Tickets gesendet.",
+        "vars": "Keine Variablen",
+        "channel_key": "TICKET_CATEGORY_ID",
+        "example": "Dieses Ticket wird in 3 Sekunden gelöscht.",
+    },
+    {
+        "key": "INVITE_VANITY_MSG",
+        "label": "Invite-Tracking: Vanity-Link",
+        "desc": "Gesendet wenn jemand über den Vanity-Link beitritt.",
+        "vars": "{mention}  {member}",
+        "channel_key": "INVITE_CHANNEL_ID",
+        "example": "{mention} ist über den Vanity-Link beigetreten.",
+    },
+    {
+        "key": "INVITE_KNOWN_MSG",
+        "label": "Invite-Tracking: Bekannter Einlader",
+        "desc": "Gesendet wenn der Einlader bekannt ist.",
+        "vars": "{mention}  {member}  {inviter}  {real}",
+        "channel_key": "INVITE_CHANNEL_ID",
+        "example": "{mention} beigetreten. Eingeladen von **{inviter}** — {real} Einladungen.",
+    },
+    {
+        "key": "INVITE_UNKNOWN_MSG",
+        "label": "Invite-Tracking: Unbekannter Einlader",
+        "desc": "Gesendet wenn der Einlader unbekannt ist.",
+        "vars": "{mention}  {member}",
+        "channel_key": "INVITE_CHANNEL_ID",
+        "example": "{mention} ist beigetreten. Einladender unbekannt.",
+    },
+    {
+        "key": "FIRST_REACT_MSG",
+        "label": "Erste Reaktion (Activity-Check)",
+        "desc": "Gesendet wer als erstes auf eine Activity-Check Nachricht reagiert.",
+        "vars": "{mention}  {user}",
+        "channel_key": "ACTIVITY_CHECK_CHANNEL_ID",
+        "example": "{mention} war der Erste! 🏆",
+    },
+]
+
+# ---- helpers ----
+def _get_channel_for_msg(guild, cfg):
+    ckey = cfg.get("channel_key","")
+    if ckey == "ACTIVITY_CHECK_CHANNEL_ID":
+        ch = guild.get_channel(ACTIVITY_CHECK_CHANNEL_ID)
+    else:
+        ch = guild.get_channel(_cid(guild.id, ckey))
+    return ch
+
+
+class MessagesMainView(discord.ui.View):
+    def __init__(self, guild_id: int):
+        super().__init__(timeout=300)
+        self.guild_id = guild_id
+        options = []
+        for m in _ALL_MESSAGES:
+            options.append(discord.SelectOption(
+                label=m["label"][:100],
+                value=m["key"],
+                description=m["desc"][:100]
+            ))
+        sel = discord.ui.Select(
+            placeholder="Nachricht auswählen...",
+            options=options,
+            min_values=1, max_values=1,
+            custom_id="messages_sel"
+        )
+        sel.callback = self.select_cb
+        self.add_item(sel)
+
+    async def select_cb(self, interaction: discord.Interaction):
+        key = interaction.data["values"][0]
+        cfg = next((m for m in _ALL_MESSAGES if m["key"] == key), None)
+        if not cfg:
+            return await interaction.response.send_message("Unbekannte Nachricht.", ephemeral=True)
+        await _show_message_detail(interaction, cfg)
+
+
+async def _show_message_detail(interaction: discord.Interaction, cfg: dict):
+    current = _cmsg(interaction.guild.id, cfg["key"])
+    default = _MSG_DEF.get(cfg["key"], "")
+    ch = _get_channel_for_msg(interaction.guild, cfg)
+    ch_str = ch.mention if ch else " Kein Kanal konfiguriert"
+
+    embed = discord.Embed(title=" " + cfg["label"], color=0x2B2D31)
+    embed.add_field(name=" Kanal", value=ch_str, inline=True)
+    embed.add_field(name=" Variablen", value="`" + cfg["vars"] + "`" if cfg["vars"] != "Keine Variablen" else "Keine", inline=True)
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+
+    cur_preview = (current[:400] + "…") if current and len(current) > 400 else (current or "*Nicht gesetzt — Standard wird verwendet*")
+    embed.add_field(name=" Aktueller Text", value="```" + cur_preview + "```", inline=False)
+
+    def_preview = (default[:200] + "…") if default and len(default) > 200 else (default or "—")
+    embed.add_field(name=" Standard-Text", value="```" + def_preview + "```", inline=False)
+    embed.set_footer(text=" Bearbeiten |  Vorschau |  Zurücksetzen | ← Zurück")
+
+    view = MessageDetailView(interaction.guild.id, cfg)
+    await interaction.response.edit_message(embed=embed, view=view)
+
+
+class MessageDetailView(discord.ui.View):
+    def __init__(self, guild_id: int, cfg: dict):
+        super().__init__(timeout=180)
+        self.guild_id = guild_id
+        self.cfg = cfg
+
+    @discord.ui.button(label=" Bearbeiten", style=discord.ButtonStyle.primary, row=0)
+    async def edit_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        current = _cmsg(interaction.guild.id, self.cfg["key"])
+        await interaction.response.send_modal(
+            MessageEditModal(self.guild_id, self.cfg, current)
+        )
+
+    @discord.ui.button(label=" Vorschau", style=discord.ButtonStyle.secondary, row=0)
+    async def preview_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        current = _cmsg(interaction.guild.id, self.cfg["key"])
+        if not current:
+            return await interaction.response.send_message("Kein Text gesetzt.", ephemeral=True)
+        try:
+            rendered = current.format(
+                mention=interaction.user.mention,
+                member=str(interaction.user),
+                user=str(interaction.user),
+                rules=_cid(interaction.guild.id, "RULES_CHANNEL_ID") or "0",
+                inviter="TestUser",
+                real=42,
+            )
+        except Exception as e:
+            rendered = current + f"\n\n Fehler beim Rendern: {e}"
+        embed = discord.Embed(
+            title=" Vorschau — " + self.cfg["label"],
+            description=rendered,
+            color=0x2B2D31
+        )
+        embed.set_footer(text="Dies ist nur eine Vorschau — keine echte Nachricht wurde gesendet.")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label=" Standard", style=discord.ButtonStyle.danger, row=0)
+    async def reset_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        default = _MSG_DEF.get(self.cfg["key"], "")
+        if not default:
+            return await interaction.response.send_message("Kein Standard vorhanden.", ephemeral=True)
+        _smsg(interaction.guild.id, self.cfg["key"], default)
+        await mlog(interaction.guild, "Nachrichten Config",
+            str(interaction.user) + " hat **" + self.cfg["label"] + "** zurückgesetzt.")
+        await _return_to_messages(interaction,
+            " **" + self.cfg["label"] + "** wurde auf den Standard zurückgesetzt.")
+
+    @discord.ui.button(label="← Zurück", style=discord.ButtonStyle.secondary, row=1)
+    async def back_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _return_to_messages(interaction)
+
+
+class MessageEditModal(discord.ui.Modal):
+    def __init__(self, guild_id: int, cfg: dict, current: str):
+        super().__init__(title="Bearbeiten — " + cfg["label"][:40])
+        self.guild_id = guild_id
+        self.cfg = cfg
+        ph = "Variablen: " + cfg["vars"] if cfg["vars"] != "Keine Variablen" else "Text eingeben..."
+        self.field = discord.ui.TextInput(
+            label=cfg["label"][:45],
+            style=discord.TextStyle.paragraph,
+            default=current[:4000],
+            max_length=4000,
+            placeholder=ph
+        )
+        self.add_item(self.field)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        _smsg(interaction.guild.id, self.cfg["key"], self.field.value)
+        await mlog(interaction.guild, "Nachrichten Config",
+            str(interaction.user) + " hat **" + self.cfg["label"] + "** aktualisiert.")
+        await _return_to_messages(interaction,
+            " **" + self.cfg["label"] + "** wurde gespeichert.")
+
+
+async def _return_to_messages(interaction: discord.Interaction, notice: str = ""):
+    g = interaction.guild
+    lines = []
+    for m in _ALL_MESSAGES:
+        current = _cmsg(g.id, m["key"])
+        ch = _get_channel_for_msg(g, m)
+        ch_str = ch.mention if ch else ""
+        preview = (current[:55] + "…") if current and len(current) > 55 else (current or "*Standard*")
+        lines.append("**" + m["label"] + "** → " + ch_str + "\n`" + preview + "`")
+
+    desc_parts = []
+    if notice:
+        desc_parts.append(notice)
+    desc_parts.append("Wähle eine Nachricht aus dem Dropdown um sie zu bearbeiten.\n")
+    desc_parts.extend(lines)
+
+    embed = discord.Embed(
+        title=" Bot-Nachrichten",
+        description="\n\n".join(desc_parts),
+        color=0x2B2D31
+    )
+    embed.set_footer(
+        text="Von " + str(interaction.user),
+        icon_url=interaction.user.display_avatar.url
+    )
+    await interaction.response.edit_message(embed=embed, view=MessagesMainView(g.id))
+
+
+@bot.tree.command(
+    name="messages",
+    description="Alle Bot-Nachrichten anzeigen und bearbeiten.",
+    guild=discord.Object(id=ALLOWED_GUILD_ID)
+)
+async def messages_cmd(interaction: discord.Interaction):
+    if interaction.user.id not in OWNERS:
+        return await interaction.response.send_message("Keine Berechtigung.", ephemeral=True)
+    g = interaction.guild
+    lines = []
+    for m in _ALL_MESSAGES:
+        current = _cmsg(g.id, m["key"])
+        ch = _get_channel_for_msg(g, m)
+        ch_str = ch.mention if ch else ""
+        preview = (current[:55] + "…") if current and len(current) > 55 else (current or "*Standard*")
+        lines.append("**" + m["label"] + "** → " + ch_str + "\n`" + preview + "`")
+
+    embed = discord.Embed(
+        title=" Bot-Nachrichten",
+        description="Wähle eine Nachricht aus dem Dropdown um sie zu bearbeiten.\n\n" + "\n\n".join(lines),
+        color=0x2B2D31
+    )
+    embed.set_footer(
+        text="Von " + str(interaction.user),
+        icon_url=interaction.user.display_avatar.url
+    )
+    await interaction.response.send_message(embed=embed, view=MessagesMainView(g.id), ephemeral=True)
 
 # ================================================================
 #  ON READY
